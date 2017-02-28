@@ -1,6 +1,8 @@
 #ifndef _IFC1210SCOPEDRV_UTILS_H_
 #define _IFC1210SCOPEDRV_UTILS_H_ 1
 
+#include <pthread.h>
+
 #include "ifcdaqdrv_list.h"
 
 #define MAX_PEV_CARDS 16
@@ -67,12 +69,12 @@ struct ifcdaqdrv_dev {
     struct list_head   list;            /**< Entry in the list of opened devices, sis8300drv_devlist. */
     uint32_t           card;            /**< Card/Crate number selected by rotational on-board switch. */
     uint32_t           fmc;             /**< FMC slot, 1 or 2. */
-    struct pevx_node  *node;            /**< PEV node structure */
+//    struct pevx_node  *node;            /**< PEV node structure */
     int                count;           /**< Number of times this device has been opened. */
     uint32_t           init_called;     /**< Positive if init_adc has been called. */
     uint32_t           ch_enabled;      /**< bitmask of enabled channels */
 
-    struct fmc_fru_id *fru_id;
+//    struct fmc_fru_id *fru_id;
     uint32_t           tosca_signature; /**< Device type */
     uint32_t           app_signature;   /**< App type */
 

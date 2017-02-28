@@ -8,19 +8,46 @@
 #include <pthread.h>
 
 
-#include <pevioctl.h>
-#include <pevxulib.h>
+// #include <pevioctl.h>
+// #include <pevxulib.h>
 
 #include "debug.h"
 #include "ifcdaqdrv.h"
 #include "ifcdaqdrv_utils.h"
-#include "ifcdaqdrv_scope.h"
-#include "ifcdaqdrv_fmc.h"
-#include "ifcdaqdrv_acq420.h"
-#include "ifcdaqdrv_adc3110.h"
+// #include "ifcdaqdrv_scope.h"
+// #include "ifcdaqdrv_fmc.h"
+// #include "ifcdaqdrv_acq420.h"
+// #include "ifcdaqdrv_adc3110.h"
+// #include "ifcfastintdrv.h"
+// #include "ifcfastintdrv_utils.h"
 
 LIST_HEAD(ifcdaqdrv_devlist);
 pthread_mutex_t ifcdaqdrv_devlist_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Global variable */
+struct sim_runtime_data {
+    ifcdaqdrv_clock         clock_source;
+    double                  channel_gain[8];
+    ifcdaqdrv_dataformat    dataformat;
+    double                  clock_frequency;
+    uint32_t                clock_divisor;
+
+    ifcdaqdrv_trigger_type  tr_trigger;
+    int32_t                 tr_threshold;
+    uint32_t                tr_mask;
+    uint32_t                tr_edge;
+
+    uint32_t                average;
+    uint32_t                decimation;
+
+    uint32_t                nsamples;
+    uint32_t                npretrig;
+
+    ifcdaqdrv_pattern       ch_pattern[8];
+
+};
+
+struct sim_runtime_data runtime_data;
 
 /*
  * Open device. Keep a list of users to support multiple open calls in the same process
@@ -28,8 +55,6 @@ pthread_mutex_t ifcdaqdrv_devlist_lock = PTHREAD_MUTEX_INITIALIZER;
 
 ifcdaqdrv_status ifcdaqdrv_open_device(struct ifcdaqdrv_usr *ifcuser) {
     ifcdaqdrv_status      status;
-    struct pevx_node     *node;
-    char                 *p;
     int32_t               i32_reg_val;
     struct ifcdaqdrv_dev *ifcdevice;
 
@@ -37,19 +62,13 @@ ifcdaqdrv_status ifcdaqdrv_open_device(struct ifcdaqdrv_usr *ifcuser) {
         return status_argument_invalid;
     }
 
-    TRACE((5, "Level %d tracing set.\n", ifcdaqdrvDebug));
+    LOG((5, "Level %d tracing set.\n", ifcdaqdrvDebug));
 
     pthread_mutex_lock(&ifcdaqdrv_devlist_lock);
 
     /* Check if device already is opened in list. */
     list_for_each_entry(ifcdevice, &ifcdaqdrv_devlist, list){
         if (ifcdevice->card == ifcuser->card && ifcdevice->fmc == ifcuser->fmc) {
-            /* Try reading from the device to check that it is physically present. */
-            status = ifc_xuser_tcsr_read(ifcuser->device, 0, &i32_reg_val);
-
-            if (status) {
-                continue;
-            }
 
             ifcuser->device = ifcdevice;
             ifcdevice->count++;
@@ -58,136 +77,51 @@ ifcdaqdrv_status ifcdaqdrv_open_device(struct ifcdaqdrv_usr *ifcuser) {
         }
     }
 
-    /* Initialize pevx library */
-    node = pevx_init(ifcuser->card);
-    if (!node) {
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status_no_device;
-    }
-
     /* Allocate private structure */
     ifcdevice = calloc(1, sizeof(struct ifcdaqdrv_dev));
     if (!ifcdevice) {
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status_internal;
+        status = status_internal;
+        goto err_dev_alloc;
     }
 
     ifcdevice->card  = ifcuser->card;
     ifcdevice->fmc   = ifcuser->fmc;
-    ifcdevice->node  = node;
     ifcdevice->count = 1;
 
     pthread_mutex_init(&ifcdevice->lock, NULL);
 
     ifcuser->device = ifcdevice;
 
-    /* Read TOSCA signature and verify that board is a TOSCA board. */
-    status = ifc_xuser_tcsr_read(ifcdevice, 0, &i32_reg_val);
-    if (status) {
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status_no_device;
-    }
-    if (i32_reg_val != IFC1210SCOPEDRV_TOSCA_SIGNATURE) {
-        // Bug in current firmware, TOSCA signature is not at address 0.
-        // printf("reg: %x, sig: %x\n", i32_reg_val, IFC1210SCOPEDRV_TOSCA_SIGNATURE);
-        // ifcdaqdrv_free(ifcdevice);
-        // pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        // return status_incompatible;
-    }
-    ifcdevice->tosca_signature = i32_reg_val;
+    // /* Register simulated board */
+    // status = ADCSim_register(ifcdevice);
+    // if (status)
+    // {
+    //     goto err_read;
+    // }
 
-    /* Read APP signature */
-    status = ifc_scope_tcsr_read(ifcdevice, 0, &i32_reg_val);
-    if (status) {
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status_no_device;
-    }
-
-    switch (i32_reg_val) {
-    case IFC1210SCOPEDRV_SCOPE_SIGNATURE:
-    case IFC1210SCOPEDRV_FASTSCOPE_SIGNATURE:
-    case IFC1210SCOPEDRV_SCOPE_DTACQ_SIGNATURE:
-        /* Recognized scope implementation. */
-        break;
-    default:
-        // Skip all signature verification for now...
-        // ifcdaqdrv_free(ifcdevice);
-        // pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        // return status_incompatible;
-        break;
-    }
-    ifcdevice->app_signature = i32_reg_val;
-#if DEBUG
-    printf("TOSCA signature: %08x, APP signature: %08x, ", ifcdevice->tosca_signature, ifcdevice->app_signature);
-    /* Read FMC FDK signature */
-    status = ifc_fmc_tcsr_read(ifcdevice, 0, &i32_reg_val);
-    if (status) {
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status_no_device;
-    }
-    printf("FMC FDK signature: %08x\n", i32_reg_val);
-#endif
-
-    /* Determine what type of FMC that is mounted. */
-    ifcdevice->fru_id = calloc(1, sizeof(struct fmc_fru_id));
-    if (!ifcdevice->fru_id) {
-        ifcdaqdrv_free(ifcdevice);
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status_internal;
-    }
-
-    /* ifc_fmc_eeprom_read_fru will allocate two char arrays that have to be freed by us. */
-    status = ifc_fmc_eeprom_read_fru(ifcdevice, ifcdevice->fru_id);
-    if (status == status_fru_info_invalid) {
-        /* .... fall back to IOxOS proprietary signature */
-        status = ifc_read_ioxos_signature(ifcdevice, ifcdevice->fru_id);
-        if (status) {
-            ifcdaqdrv_free(ifcdevice);
-            pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-            return status;
-        }
-    } else if (status) {
-        ifcdaqdrv_free(ifcdevice);
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status;
-    }
-
-    p = ifcdevice->fru_id->product_name;
-    if (p) {
-        if (strcmp(p, "ACQ420FMC") == 0) {
-            acq420_register(ifcdevice);
-        } else if (strcmp(p, "ADC3110") == 0) {
-            adc3110_register(ifcdevice);
-        } else if (strcmp(p, "ADC3111") == 0) {
-            adc3110_register(ifcdevice);
-        } else if (strcmp(p, "ADC3112") == 0) {
-            TRACE((5, "No support for ADC3112 yet\n"));
-        } else {
-            TRACE((5, "No recognized device %s\n", p));
-            ifcdaqdrv_free(ifcdevice);
-            pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-            return status_incompatible;
-        }
-    } else {
-        TRACE((4, "Internal error, no product_name\n"));
-        ifcdaqdrv_free(ifcdevice);
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status_internal;
-    }
-
-    /* Allocate all memory necessary for DMA transfers */
+    /* Allocate memory */
     status = ifcdaqdrv_dma_allocate(ifcdevice);
-    if (status) {
-        ifcdaqdrv_free(ifcdevice);
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status;
+    if(status) {
+        goto err_read;
     }
+    break;
 
     /* Add device to the list of opened devices */
     list_add_tail(&ifcdevice->list, &ifcdaqdrv_devlist);
     pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-
     return status_success;
+
+err_read:
+    /* Free ifcdevice (This will also free fru_id for us. */
+    ifcdaqdrv_free(ifcdevice);
+
+err_dev_alloc:
+    // /* Close pevx library */
+
+err_pevx_init:
+    /* Unlock device list */
+    pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
+    return status;
 }
 
 /*
@@ -208,7 +142,6 @@ ifcdaqdrv_status ifcdaqdrv_close_device(struct ifcdaqdrv_usr *ifcuser) {
     if (--ifcdevice->count == 0) {
         list_del(&ifcdevice->list);
         ifcdaqdrv_free(ifcdevice);
-        pevx_exit(ifcdevice->card);
         free(ifcdevice);
     }
     pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
@@ -225,14 +158,24 @@ ifcdaqdrv_status ifcdaqdrv_close_device(struct ifcdaqdrv_usr *ifcuser) {
 
 ifcdaqdrv_status ifcdaqdrv_init_adc(struct ifcdaqdrv_usr *ifcuser) {
     struct ifcdaqdrv_dev *ifcdevice;
+    int i;
 
     ifcdevice = ifcuser->device;
     if (!ifcdevice) {
         return status_no_device;
     }
-    if (!ifcdevice->init_adc) {
-        return status_no_support;
-    }
+
+    // set configurations
+    runtime_data.clock_source = ifcdaqdrv_clock_internal;
+    runtime_data.clock_frequency = 250e6;
+    runtime_data.clock_divisor = 1;
+
+    // set gain to 1
+    for (i=0; i<8; i++)
+        runtime_data.channel_gain[i] = 1.0;
+
+    // set unsigned data format
+    runtime_data.dataformat = ifcdaqdrv_dataformat_unsigned;    
 
     ifcdevice->init_called++;
 
@@ -267,67 +210,6 @@ ifcdaqdrv_status ifcdaqdrv_arm_device(struct ifcdaqdrv_usr *ifcuser){
 
     pthread_mutex_lock(&ifcdevice->lock);
 
-#if 0
-    /* Stop any running acquisition */
-    status = ifc_scope_acq_tcsr_setclr(ifcdevice, 0, 1 << 31 | 1, IFC_SCOPE_TCSR_CS_ACQ_Command_MASK);
-    if (status) {
-        pthread_mutex_unlock(&ifcdevice->lock);
-        return status_device_access;
-    }
-#endif
-
-    // check ACQ Clock
-    status = ifc_scope_acq_tcsr_read(ifcdevice, IFC_SCOPE_TCSR_CS_REG, &i32_reg_val);
-    if ((i32_reg_val & IFC_SCOPE_TCSR_CS_ACQ_CLKERR_MASK) != 0) {
-#if DEBUG
-        printf("Error: %s() ADC acquisition clock reference PLL is unlocked!\n", __FUNCTION__);
-#endif
-        pthread_mutex_unlock(&ifcdevice->lock);
-        return status_unknown;
-    }
-
-    /* Arm device */
-    status = ifc_scope_acq_tcsr_setclr(ifcdevice, IFC_SCOPE_TCSR_CS_REG, 1 << IFC_SCOPE_TCSR_CS_ACQ_Command_SHIFT, 0);
-
-    /* If software trigger is selected, try manually trigger. */
-    if (ifcdevice->trigger_type == ifcdaqdrv_trigger_soft) {
-        /* Estimate time to complete sample */
-        double acquisition_time;
-        double frequency;
-        uint32_t divisor;
-        uint32_t nsamples;
-        uint32_t average;
-        uint32_t decimation;
-        int32_t timeo;
-        ifcdevice->get_clock_frequency(ifcdevice, &frequency);
-        ifcdevice->get_clock_divisor(ifcdevice, &divisor);
-        ifcdevice->get_nsamples(ifcdevice, &nsamples);
-        ifcdaqdrv_scope_get_average(ifcdevice, &average);
-        ifcdaqdrv_get_decimation(ifcuser, &decimation);
-
-        acquisition_time = ((nsamples * average * decimation) / (frequency / divisor));
-        /* Poll for the expected acquisition time before giving up */
-        timeo = SOFT_TRIG_LEAST_AMOUNT_OF_CYCLES + acquisition_time / (ifcdevice->poll_period * 1e-6);
-        TRACE((6, "%f %d iterations\n", acquisition_time, (int32_t) (SOFT_TRIG_LEAST_AMOUNT_OF_CYCLES + acquisition_time / (ifcdevice->poll_period * 1e-6))));
-        do {
-            status  = ifc_scope_acq_tcsr_write(ifcdevice, IFC_SCOPE_TCSR_LA_REG, 1 << IFC_SCOPE_TCSR_LA_Spec_CMD_SHIFT);
-            usleep(ifcdevice->poll_period);
-            status |= ifc_scope_acq_tcsr_read(ifcdevice, IFC_SCOPE_TCSR_CS_REG, &i32_reg_val);
-        } while (!status && ((i32_reg_val & IFC_SCOPE_TCSR_CS_ACQ_Status_MASK) >> IFC_SCOPE_TCSR_CS_ACQ_Status_SHIFT) < 2 && timeo-- > 0);
-
-        if (status) {
-            pthread_mutex_unlock(&ifcdevice->lock);
-            return status_device_access;
-        }
-
-        if(((i32_reg_val & IFC_SCOPE_TCSR_CS_ACQ_Status_MASK) >> IFC_SCOPE_TCSR_CS_ACQ_Status_SHIFT) < 2) {
-            // Failed to self-trigger.
-            TRACE((6, "CS register value is %08x after %d iterations\n", i32_reg_val, (int32_t) (SOFT_TRIG_LEAST_AMOUNT_OF_CYCLES + acquisition_time / (ifcdevice->poll_period * 1e-6))));
-            pthread_mutex_unlock(&ifcdevice->lock);
-            return status_internal;
-        }
-    }
-
     ifcdevice->armed = 1;
     pthread_mutex_unlock(&ifcdevice->lock);
     return status_success;
@@ -337,10 +219,10 @@ ifcdaqdrv_status ifcdaqdrv_arm_device(struct ifcdaqdrv_usr *ifcuser){
  * Disarm device
  */
 ifcdaqdrv_status ifcdaqdrv_disarm_device(struct ifcdaqdrv_usr *ifcuser){
-    ifcdaqdrv_status      status;
-    struct ifcdaqdrv_dev *ifcdevice;
-    int32_t               i32_reg_val;
-    int32_t               i;
+    // ifcdaqdrv_status      status;
+    // struct ifcdaqdrv_dev *ifcdevice;
+    // int32_t               i32_reg_val;
+    // int32_t               i;
 
     ifcdevice = ifcuser->device;
     if (!ifcdevice) {
@@ -348,43 +230,6 @@ ifcdaqdrv_status ifcdaqdrv_disarm_device(struct ifcdaqdrv_usr *ifcuser){
     }
 
     pthread_mutex_lock(&ifcdevice->lock);
-
-    /* Set "Acquisition STOP/ABORT" bit and "ACQ mode single" bit. Single
-     * mode has to be set to disable a continuous acquisition. */
-    status = ifc_scope_acq_tcsr_setclr(ifcdevice, 0,
-                                       IFC_SCOPE_TCSR_CS_ACQ_Command_VAL_ABORT << IFC_SCOPE_TCSR_CS_ACQ_Command_SHIFT
-                                       | IFC_SCOPE_TCSR_CS_ACQ_Single_VAL_SINGLE,
-                                       IFC_SCOPE_TCSR_CS_ACQ_Command_MASK);
-    if (status) {
-        pthread_mutex_unlock(&ifcdevice->lock);
-        return status_device_access;
-    }
-
-    status = ifc_scope_acq_tcsr_read(ifcdevice, 0, &i32_reg_val);
-
-    if(i32_reg_val & IFC_SCOPE_TCSR_CS_ACQ_Status_MASK) {
-        // If ACQ_Status hasn't gone to idle (0) disarming failed.
-        // Try ten times to disarm the board and then report internal error.
-        for(i = 0; i < 10; ++i) {
-            status = ifc_scope_acq_tcsr_setclr(ifcdevice, 0,
-                                               IFC_SCOPE_TCSR_CS_ACQ_Command_VAL_ABORT << IFC_SCOPE_TCSR_CS_ACQ_Command_SHIFT
-                                               | IFC_SCOPE_TCSR_CS_ACQ_Single_VAL_SINGLE,
-                                               IFC_SCOPE_TCSR_CS_ACQ_Command_MASK);
-            if (status) {
-                pthread_mutex_unlock(&ifcdevice->lock);
-                return status_device_access;
-            }
-            status = ifc_scope_acq_tcsr_read(ifcdevice, 0, &i32_reg_val);
-            if(!(i32_reg_val & IFC_SCOPE_TCSR_CS_ACQ_Status_MASK)) {
-                goto disarm_success;
-            }
-        }
-
-        pthread_mutex_unlock(&ifcdevice->lock);
-        return status_internal;
-    }
-
-disarm_success:
 
     ifcdevice->armed = 0;
 
@@ -409,13 +254,10 @@ ifcdaqdrv_status ifcdaqdrv_wait_acq_end(struct ifcdaqdrv_usr *ifcuser) {
         return status_no_device;
     }
 
-    do {
-        status = ifc_scope_acq_tcsr_read(ifcdevice, IFC_SCOPE_TCSR_CS_REG, &i32_reg_val);
-        TRACE((LEVEL_DEBUG, "TCSR %02x 0x%08x\n", ifc_get_scope_tcsr_offset(ifcdevice), i32_reg_val));
-        usleep(ifcdevice->poll_period);
-    } while (!status && ifcdevice->armed && (
-                (i32_reg_val & IFC_SCOPE_TCSR_CS_ACQ_Status_MASK) >> IFC_SCOPE_TCSR_CS_ACQ_Status_SHIFT !=
-                  IFC_SCOPE_TCSR_CS_ACQ_Status_VAL_DONE));
+
+    // TODO: FILL THE BUFFERS WITH RANDOM NUMBERS!!!!
+
+    sleep(1);
 
     if (!ifcdevice->armed) {
         return status_cancel;
@@ -502,10 +344,6 @@ ifcdaqdrv_status ifcdaqdrv_set_clock_source(struct ifcdaqdrv_usr *ifcuser, ifcda
         return status_no_device;
     }
 
-    if (!ifcdevice->set_clock_source) {
-        return status_no_support;
-    }
-
     pthread_mutex_lock(&ifcdevice->lock);
 
     if (ifcdevice->armed) {
@@ -513,7 +351,8 @@ ifcdaqdrv_status ifcdaqdrv_set_clock_source(struct ifcdaqdrv_usr *ifcuser, ifcda
         return status_device_armed;
     }
 
-    status = ifcdevice->set_clock_source(ifcdevice, clock);
+    runtime_data.clock_source = clock;
+    status = status_success;
 
     pthread_mutex_unlock(&ifcdevice->lock);
 
@@ -532,11 +371,9 @@ ifcdaqdrv_status ifcdaqdrv_get_clock_source(struct ifcdaqdrv_usr *ifcuser, ifcda
         return status_no_device;
     }
 
-    if (!ifcdevice->get_clock_source) {
-        return status_no_support;
-    }
+    *clock = runtime_data.clock_source;
 
-    return ifcdevice->get_clock_source(ifcdevice, clock);
+    return status_success;
 }
 
 /*
@@ -559,14 +396,10 @@ ifcdaqdrv_status ifcdaqdrv_set_clock_frequency(struct ifcdaqdrv_usr *ifcuser, do
         return status_device_armed;
     }
 
-    if (ifcdevice->set_clock_frequency) {
-        status = ifcdevice->set_clock_frequency(ifcdevice, frequency);
-        pthread_mutex_unlock(&ifcdevice->lock);
-        return status;
-    }
+    runtime_data.clock_frequency = frequency;
 
     pthread_mutex_unlock(&ifcdevice->lock);
-    return status_no_support;
+    return status_success;
 }
 
 /*
@@ -580,14 +413,13 @@ ifcdaqdrv_status ifcdaqdrv_get_clock_frequency(struct ifcdaqdrv_usr *ifcuser, do
     if (!ifcdevice) {
         return status_no_device;
     }
-    if (!ifcdevice->get_clock_frequency) {
-        return status_no_support;
-    }
     if (!frequency) {
         return status_argument_invalid;
     }
 
-    return ifcdevice->get_clock_frequency(ifcdevice, frequency);
+    *frequency = runtime_data.clock_frequency;
+
+    return status_success;
 }
 
 /*
@@ -655,14 +487,10 @@ ifcdaqdrv_status ifcdaqdrv_set_clock_divisor(struct ifcdaqdrv_usr *ifcuser, uint
         return status_device_armed;
     }
 
-    if (ifcdevice->set_clock_divisor) {
-        status = ifcdevice->set_clock_divisor(ifcdevice, divisor);
-        pthread_mutex_unlock(&ifcdevice->lock);
-        return status;
-    }
+    runtime_data.clock_divisor = divisor;
 
     pthread_mutex_unlock(&ifcdevice->lock);
-    return status_no_support;
+    return status_success;
 }
 
 /*
@@ -681,12 +509,12 @@ ifcdaqdrv_status ifcdaqdrv_get_clock_divisor(struct ifcdaqdrv_usr *ifcuser, uint
         return status_argument_invalid;
     }
 
-    if (!ifcdevice->get_clock_divisor) {
-        *divisor = 1;
-        return status_success;
-    }
+    if (!runtime_data.clock_divisor)
+        runtime_data.clock_divisor = 1;
 
-    return ifcdevice->get_clock_divisor(ifcdevice, divisor);
+    *divisor = runtime_data.clock_divisor;
+
+    return status_success;
 }
 
 /*
@@ -732,68 +560,6 @@ ifcdaqdrv_status ifcdaqdrv_set_trigger(struct ifcdaqdrv_usr *ifcuser, ifcdaqdrv_
         return status_no_device;
     }
 
-    switch (trigger) {
-    case ifcdaqdrv_trigger_backplane:
-        i32_trig_val |= (mask & 0x7f) << 20;  // Set VME pin
-        i32_trig_val |= 0x11 << 16;           // Set backplane trigger
-        if (rising_edge & 0x7FFFFFFF) {
-            i32_trig_val |= 1 << 27;
-        }
-        break;
-    case ifcdaqdrv_trigger_frontpanel:
-        gpio         = mask & 0x40000000;
-        channel_mask = mask & 0x3fffffff;
-        while (channel_mask >>= 1) {
-            ++channel;
-        }
-
-        if (channel >= ifcdevice->nchannels) {
-            return status_argument_range;
-        }
-
-        i32_cs_val   = IFC_SCOPE_TCSR_CS_ACQ_Single_VAL_SINGLE;
-        i32_trig_val = 1 << 31; // Enable trigger
-        if (!gpio) {
-            /* Trigger only on channel */
-            i32_trig_val |= channel << 28;
-            if (rising_edge & (1 << channel)) {
-                i32_trig_val |= 1 << 27;
-            }
-        } else if (gpio && (mask & 0xff)) {
-            /* Trigger on GPIO & channel */
-            i32_trig_val |= channel << 28;
-            if (rising_edge & (1 << channel)) {
-                i32_trig_val |= 1 << 27;
-            }
-            if (rising_edge & mask & 0x40000000) {
-                i32_trig_val |= 1 << 19; // 1 = Active high
-            }
-        } else {
-            /* Trigger only on GPIO */
-            i32_trig_val |= 2 << 16;       // Set GPIO trigger
-            if (rising_edge & 0x40000000) {
-                i32_trig_val |= 1 << 27;
-            }
-        }
-        break;
-    case ifcdaqdrv_trigger_auto: // Auto is not supported anymore (will be interpreted as soft trigger)
-    case ifcdaqdrv_trigger_soft:
-        status = ifcdaqdrv_get_ptq(ifcdevice, &ptq);
-        if(status) {
-            return status;
-        }
-        if(ptq != 0) {
-            // It doesn't make sense to have pre-trigger samples when triggering manually.
-            return status_config;
-        }
-    case ifcdaqdrv_trigger_none:
-        i32_cs_val = IFC_SCOPE_TCSR_CS_ACQ_Single_VAL_SINGLE;
-    default:
-        break;
-    }
-
-    TRACE((LEVEL_INFO, "Will set cs val 0x%08x, trig val 0x%08x\n", i32_cs_val, i32_trig_val));
-
     pthread_mutex_lock(&ifcdevice->lock);
 
     if (ifcdevice->armed) {
@@ -803,27 +569,10 @@ ifcdaqdrv_status ifcdaqdrv_set_trigger(struct ifcdaqdrv_usr *ifcuser, ifcdaqdrv_
 
     ifcdevice->trigger_type = trigger;
 
-    status = ifc_scope_acq_tcsr_setclr(ifcdevice, IFC_SCOPE_TCSR_CS_REG, i32_cs_val, IFC_SCOPE_TCSR_CS_ACQ_Single_MASK | IFC_SCOPE_TCSR_CS_ACQ_Auto_MASK);
-    if (status) {
-        pthread_mutex_unlock(&ifcdevice->lock);
-        return status;
-    }
-
-    status = ifc_scope_acq_tcsr_setclr(ifcdevice, IFC_SCOPE_TCSR_TRIG_REG, i32_trig_val, 0xFFFFFFFF);
-    if (status) {
-        pthread_mutex_unlock(&ifcdevice->lock);
-        return status;
-    }
-
-    if (ifcdevice->set_trigger_threshold) {
-        status = ifcdevice->set_trigger_threshold(ifcdevice, threshold);
-    }
-
-#if DEBUG
-    /* This is interesting because set_trigger_threshold may modify the content of trigger register */
-    ifc_scope_acq_tcsr_read(ifcdevice, IFC_SCOPE_TCSR_TRIG_REG, &i32_trig_val);
-    TRACE((LEVEL_INFO, "Is set trig val %08x\n", i32_trig_val));
-#endif
+    runtime_data.tr_trigger = trigger;
+    runtime_data.tr_edge = rising_edge;
+    runtime_data.tr_threshold = threshold;
+    runtime_data.tr_mask = mask;
 
     pthread_mutex_unlock(&ifcdevice->lock);
 
@@ -836,9 +585,6 @@ ifcdaqdrv_status ifcdaqdrv_set_trigger(struct ifcdaqdrv_usr *ifcuser, ifcdaqdrv_
 
 ifcdaqdrv_status ifcdaqdrv_get_trigger(struct ifcdaqdrv_usr *ifcuser, ifcdaqdrv_trigger_type *trigger,
                                        int32_t *threshold, uint32_t *mask, uint32_t *rising_edge) {
-    ifcdaqdrv_status      status;
-    int32_t               i32_cs_val   = 0; // Control & Status value
-    int32_t               i32_trig_val = 0; // Trigger value
     struct ifcdaqdrv_dev *ifcdevice;
 
     ifcdevice = ifcuser->device;
@@ -848,67 +594,16 @@ ifcdaqdrv_status ifcdaqdrv_get_trigger(struct ifcdaqdrv_usr *ifcuser, ifcdaqdrv_
 
     /* Lock device so that the trigger configuration can be read out atomically. */
     pthread_mutex_lock(&ifcdevice->lock);
-    status = ifc_scope_acq_tcsr_read(ifcdevice, IFC_SCOPE_TCSR_CS_REG, &i32_cs_val);
-    if (status) {
-        pthread_mutex_unlock(&ifcdevice->lock);
-        return status;
-    }
-    status = ifc_scope_acq_tcsr_read(ifcdevice, IFC_SCOPE_TCSR_TRIG_REG, &i32_trig_val);
-    if (status) {
-        pthread_mutex_unlock(&ifcdevice->lock);
-        return status;
-    }
-    pthread_mutex_unlock(&ifcdevice->lock);
 
     if (trigger) {
         *trigger = ifcdevice->trigger_type;
     }
 
-    if (threshold && ifcdevice->get_trigger_threshold) {
-        status = ifcdevice->get_trigger_threshold(ifcdevice, threshold);
-    }
+    *rising_edge = runtime_data.tr_edge;
+    *threshold = runtime_data.tr_threshold;
+    *mask = runtime_data.tr_mask;
 
-    if (mask) {
-        *mask = 0;
-        if (i32_trig_val & 1 << 18) {
-            // GPIO and Channel
-            *mask  = 0x40000000;
-            *mask |= 1 << ((i32_trig_val >> 28) & 0x7);
-        } else if (((i32_trig_val >> 16) & 3) == 2) {
-            // GPIO only
-            *mask = 0x40000000;
-        } else if (((i32_trig_val >> 16) & 3) == 3) {
-            // Backplane (VME) only
-            *mask = 0x80000000 | ((i32_trig_val >> 26) & 0x7F);
-        } else {
-            // Channel only
-            *mask = 1 << ((i32_trig_val >> 28) & 0x7);
-        }
-    }
-
-    if (rising_edge) {
-        *rising_edge = 0;
-        if(i32_trig_val & (1 << 27)) {
-            /* Trigger polarity is positive edge */
-            if (((i32_trig_val >> 16) & 3) == 2) {
-                // GPIO only
-                *rising_edge = 0x40000000;
-            } else if (((i32_trig_val >> 16) & 3) == 3) {
-                // Backplane (VME) only
-                *rising_edge = 0x80000000 | ((i32_trig_val >> 26) & 0x7F);
-            } else {
-                // Channel only
-                *rising_edge = 1 << ((i32_trig_val >> 28) & 0x7);
-            }
-        }
-        if(i32_trig_val & (1 << 19)) {
-            /* GPIO gate is active high */
-            *rising_edge |= 0x40000000;
-        }
-        *rising_edge = (i32_trig_val & (1 << 27)) ? 0x1FF : 0;
-    }
-
-    return status;
+    return status_success;
 }
 
 /*
@@ -930,9 +625,13 @@ ifcdaqdrv_status ifcdaqdrv_set_average(struct ifcdaqdrv_usr *ifcuser, uint32_t a
         return status_device_armed;
     }
 
-    status = ifcdaqdrv_scope_set_average(ifcdevice, average);
+    if (average == 0)
+        return status_argument_range;
+
+    runtime_data.average = average;
+
     pthread_mutex_unlock(&ifcdevice->lock);
-    return status;
+    return status_success;
 }
 
 /*
@@ -950,7 +649,9 @@ ifcdaqdrv_status ifcdaqdrv_get_average(struct ifcdaqdrv_usr *ifcuser, uint32_t *
         return status_argument_invalid;
     }
 
-    return ifcdaqdrv_scope_get_average(ifcdevice, average);
+    *average = runtime_data.average;
+
+    return status_success;
 
 }
 
@@ -1007,11 +708,8 @@ ifcdaqdrv_status ifcdaqdrv_set_decimation(struct ifcdaqdrv_usr *ifcuser, uint32_
     }
 
     // Decimation is not supported when averaging is enabled.
-    status = ifc_scope_acq_tcsr_read(ifcdevice, 0, &i32_reg_val);
-    if(decimation != 1 && i32_reg_val & IFC_SCOPE_TCSR_CS_ACQ_downSMP_MOD_MASK) {
-        return status_config;
-    }
 
+    // Check if decimation is valid 
     for (i = 0; i < MAX_DECIMATIONS; ++i) {
         if (ifcdevice->decimations[i] == decimation) {
             pthread_mutex_lock(&ifcdevice->lock);
@@ -1021,9 +719,9 @@ ifcdaqdrv_status ifcdaqdrv_set_decimation(struct ifcdaqdrv_usr *ifcuser, uint32_
                 return status_device_armed;
             }
 
-            status = ifc_scope_acq_tcsr_setclr(ifcdevice, 0, i << 2, IFC_SCOPE_TCSR_CS_ACQ_downSMP_MASK);
+            runtime_data.decimation = decimation;
             pthread_mutex_unlock(&ifcdevice->lock);
-            return status;
+            return status_success;
         }
     }
     return status_argument_invalid;
@@ -1046,15 +744,12 @@ ifcdaqdrv_status ifcdaqdrv_get_decimation(struct ifcdaqdrv_usr *ifcuser, uint32_
         return status_argument_invalid;
     }
 
-    status = ifc_scope_acq_tcsr_read(ifcdevice, 0, &i32_reg_val);
-    if(!(i32_reg_val & IFC_SCOPE_TCSR_CS_ACQ_downSMP_MOD_MASK)) {
-        *decimation = ifcdevice->decimations[(i32_reg_val & IFC_SCOPE_TCSR_CS_ACQ_downSMP_MASK) >> IFC_SCOPE_TCSR_CS_ACQ_downSMP_SHIFT];
-        return status;
-    }
+    if (!runtime_data.decimation)
+        runtime_data.decimation = 1;
 
-    *decimation   = 1;
+    *decimation = runtime_data.decimation;
 
-    return status;
+    return status_success;
 }
 
 /*
@@ -1103,8 +798,9 @@ ifcdaqdrv_status ifcdaqdrv_set_nsamples(struct ifcdaqdrv_usr *ifcuser, uint32_t 
         return status_no_device;
     }
 
-    if(!ifcdevice->set_nsamples) {
-        return status_no_support;
+    /* Check if nsamples is power of two */
+    if ((nsamples & (nsamples - 1)) != 0) {
+        return status_argument_range;
     }
 
     pthread_mutex_lock(&ifcdevice->lock);
@@ -1113,9 +809,11 @@ ifcdaqdrv_status ifcdaqdrv_set_nsamples(struct ifcdaqdrv_usr *ifcuser, uint32_t 
         pthread_mutex_unlock(&ifcdevice->lock);
         return status_device_armed;
     }
-    status = ifcdevice->set_nsamples(ifcdevice, nsamples);
+    
+    runtime_data.nsamples = nsamples;
+
     pthread_mutex_unlock(&ifcdevice->lock);
-    return status;
+    return status_success;
 }
 
 /*
@@ -1132,7 +830,10 @@ ifcdaqdrv_status ifcdaqdrv_get_nsamples(struct ifcdaqdrv_usr *ifcuser, uint32_t 
     if (!nsamples) {
         return status_argument_invalid;
     }
-    return ifcdevice->get_nsamples(ifcdevice, nsamples);
+    
+    *nsamples = runtime_data.nsamples;
+
+    return status_success;
 }
 
 /*
@@ -1155,9 +856,10 @@ ifcdaqdrv_status ifcdaqdrv_set_npretrig(struct ifcdaqdrv_usr *ifcuser, uint32_t 
         return status_device_armed;
     }
 
-    status = ifcdaqdrv_scope_set_npretrig(ifcdevice, npretrig);
+    runtime_data.npretrig = npretrig;
+
     pthread_mutex_unlock(&ifcdevice->lock);
-    return status;
+    return status_success;
 }
 
 /*
@@ -1178,10 +880,12 @@ ifcdaqdrv_status ifcdaqdrv_get_npretrig(struct ifcdaqdrv_usr *ifcuser, uint32_t 
 
     /* Take mutex since we have to read out multiple values */
     pthread_mutex_lock(&ifcdevice->lock);
-    status = ifcdaqdrv_scope_get_npretrig(ifcdevice, npretrig);
+    
+    *npretrig = runtime_data.npretrig;
+
     pthread_mutex_unlock(&ifcdevice->lock);
 
-    return status;
+    return status_success;
 }
 
 /*
@@ -1207,9 +911,11 @@ ifcdaqdrv_status ifcdaqdrv_set_gain(struct ifcdaqdrv_usr *ifcuser, uint32_t chan
         return status_device_armed;
     }
 
-    status = ifcdevice->set_gain(ifcuser->device, channel, gain);
+    runtime_data.channel_gain[channel] = gain;    
+
+
     pthread_mutex_unlock(&ifcdevice->lock);
-    return status;
+    return status_success;
 }
 
 /*
@@ -1223,12 +929,17 @@ ifcdaqdrv_status ifcdaqdrv_get_gain(struct ifcdaqdrv_usr *ifcuser, uint32_t chan
     if (!ifcdevice) {
         return status_no_device;
     }
-    if (!ifcdevice->get_gain) {
-        *gain = 1.0;
-        return status_success;
+
+    if (channel > 7)
+        return status_argument_invalid;
+
+    if (!runtime_data.channel_gain[channel]) {
+        runtime_data.channel_gain[channel] = 1.0;
     }
 
-    return ifcdevice->get_gain(ifcdevice, channel, gain);
+    *gain = runtime_data.channel_gain[channel];
+
+    return status_success;
 }
 
 /*
@@ -1271,7 +982,7 @@ ifcdaqdrv_status ifcdaqdrv_get_resolution(struct ifcdaqdrv_usr *ifcuser, uint32_
         return status_argument_invalid;
     }
 
-    if (!ifcdevice->resolution) {
+    if (!ifcdevice->sample_resolution) {
         return status_internal;
     }
 
@@ -1291,9 +1002,6 @@ ifcdaqdrv_status ifcdaqdrv_set_pattern(struct ifcdaqdrv_usr *ifcuser, uint32_t c
     if (!ifcdevice) {
         return status_no_device;
     }
-    if (!ifcdevice->set_pattern) {
-        return status_no_support;
-    }
 
     pthread_mutex_lock(&ifcdevice->lock);
 
@@ -1302,9 +1010,11 @@ ifcdaqdrv_status ifcdaqdrv_set_pattern(struct ifcdaqdrv_usr *ifcuser, uint32_t c
         return status_device_armed;
     }
 
-    status = ifcdevice->set_pattern(ifcuser->device, channel, pattern);
+    //status = ifcdevice->set_pattern(ifcuser->device, channel, pattern);
+    runtime_data.ch_pattern[ch_pattern] = pattern;
+
     pthread_mutex_unlock(&ifcdevice->lock);
-    return status;
+    return status_success;
 }
 
 /*
@@ -1318,12 +1028,14 @@ ifcdaqdrv_status ifcdaqdrv_get_pattern(struct ifcdaqdrv_usr *ifcuser, uint32_t c
     if (!ifcdevice) {
         return status_no_device;
     }
-    if (!ifcdevice->get_pattern) {
-        *pattern = ifcdaqdrv_pattern_none;
-        return status_success;
-    }
+    // if (!ifcdevice->get_pattern) {
+    //     *pattern = ifcdaqdrv_pattern_none;
+    //     return status_success;
+    // }
 
-    return ifcdevice->get_pattern(ifcdevice, channel, pattern);
+    *pattern = runtime_data.ch_pattern[channel];
+
+    return status_success;
 }
 
 /*
