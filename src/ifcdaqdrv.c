@@ -7,13 +7,16 @@
 #include <sys/ioctl.h>
 #include <pthread.h>
 
+#include <time.h>
+
 
 // #include <pevioctl.h>
 // #include <pevxulib.h>
 
 #include "debug.h"
-#include "ifcdaqdrv.h"
-#include "ifcdaqdrv_utils.h"
+#include "ifcdaqdrv2.h"
+#include "ifcdaqdrv_sim.h"
+// #include "ifcdaqdrv_utils.h"
 // #include "ifcdaqdrv_scope.h"
 // #include "ifcdaqdrv_fmc.h"
 // #include "ifcdaqdrv_acq420.h"
@@ -24,44 +27,20 @@
 LIST_HEAD(ifcdaqdrv_devlist);
 pthread_mutex_t ifcdaqdrv_devlist_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* Global variable */
-struct sim_runtime_data {
-    ifcdaqdrv_clock         clock_source;
-    double                  channel_gain[8];
-    ifcdaqdrv_dataformat    dataformat;
-    double                  clock_frequency;
-    uint32_t                clock_divisor;
-
-    ifcdaqdrv_trigger_type  tr_trigger;
-    int32_t                 tr_threshold;
-    uint32_t                tr_mask;
-    uint32_t                tr_edge;
-
-    uint32_t                average;
-    uint32_t                decimation;
-
-    uint32_t                nsamples;
-    uint32_t                npretrig;
-
-    ifcdaqdrv_pattern       ch_pattern[8];
-
-};
-
-struct sim_runtime_data runtime_data;
-
 /*
  * Open device. Keep a list of users to support multiple open calls in the same process
  */
 
 ifcdaqdrv_status ifcdaqdrv_open_device(struct ifcdaqdrv_usr *ifcuser) {
     ifcdaqdrv_status      status;
-    int32_t               i32_reg_val;
+    //int32_t               i32_reg_val;
     struct ifcdaqdrv_dev *ifcdevice;
 
     if (!ifcuser || ifcuser->card >= MAX_PEV_CARDS || (ifcuser->fmc != 1 && ifcuser->fmc != 2)) {
         return status_argument_invalid;
     }
 
+    ifcdaqdrvDebug = 0;
     LOG((5, "Level %d tracing set.\n", ifcdaqdrvDebug));
 
     pthread_mutex_lock(&ifcdaqdrv_devlist_lock);
@@ -92,19 +71,18 @@ ifcdaqdrv_status ifcdaqdrv_open_device(struct ifcdaqdrv_usr *ifcuser) {
 
     ifcuser->device = ifcdevice;
 
-    // /* Register simulated board */
-    // status = ADCSim_register(ifcdevice);
-    // if (status)
-    // {
-    //     goto err_read;
-    // }
+    /* Register simulated board */
+    status = ADCSim_register(ifcdevice);
+    if (status)
+    {
+        goto err_read;
+    }
 
     /* Allocate memory */
     status = ifcdaqdrv_dma_allocate(ifcdevice);
     if(status) {
         goto err_read;
     }
-    break;
 
     /* Add device to the list of opened devices */
     list_add_tail(&ifcdevice->list, &ifcdaqdrv_devlist);
@@ -118,7 +96,7 @@ err_read:
 err_dev_alloc:
     // /* Close pevx library */
 
-err_pevx_init:
+// err_pevx_init:
     /* Unlock device list */
     pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
     return status;
@@ -166,20 +144,20 @@ ifcdaqdrv_status ifcdaqdrv_init_adc(struct ifcdaqdrv_usr *ifcuser) {
     }
 
     // set configurations
-    runtime_data.clock_source = ifcdaqdrv_clock_internal;
-    runtime_data.clock_frequency = 250e6;
-    runtime_data.clock_divisor = 1;
+    ifcdevice->rt_clock_source = ifcdaqdrv_clock_internal;
+    ifcdevice->rt_clock_frequency = 250e6;
+    ifcdevice->rt_clock_divisor = 1;
 
     // set gain to 1
     for (i=0; i<8; i++)
-        runtime_data.channel_gain[i] = 1.0;
+        ifcdevice->rt_channel_gain[i] = 1.0;
 
     // set unsigned data format
-    runtime_data.dataformat = ifcdaqdrv_dataformat_unsigned;    
+    ifcdevice->rt_dataformat = ifcdaqdrv_dataformat_unsigned;    
 
     ifcdevice->init_called++;
 
-    return ifcdevice->init_adc(ifcdevice);
+    return status_success;
 }
 
 /* When the device is in soft trigger mode, the arm function will try to manually trigger the device a limited amount of
@@ -195,9 +173,9 @@ ifcdaqdrv_status ifcdaqdrv_init_adc(struct ifcdaqdrv_usr *ifcuser) {
  * length before it actually knows if it succeded.
  */
 ifcdaqdrv_status ifcdaqdrv_arm_device(struct ifcdaqdrv_usr *ifcuser){
-    ifcdaqdrv_status      status;
+    //ifcdaqdrv_status      status;
     struct ifcdaqdrv_dev *ifcdevice;
-    int32_t               i32_reg_val;
+    //int32_t               i32_reg_val;
 
     ifcdevice = ifcuser->device;
     if (!ifcdevice) {
@@ -210,6 +188,8 @@ ifcdaqdrv_status ifcdaqdrv_arm_device(struct ifcdaqdrv_usr *ifcuser){
 
     pthread_mutex_lock(&ifcdevice->lock);
 
+    printf("[DEBUG] Arming device...\n");
+
     ifcdevice->armed = 1;
     pthread_mutex_unlock(&ifcdevice->lock);
     return status_success;
@@ -220,7 +200,7 @@ ifcdaqdrv_status ifcdaqdrv_arm_device(struct ifcdaqdrv_usr *ifcuser){
  */
 ifcdaqdrv_status ifcdaqdrv_disarm_device(struct ifcdaqdrv_usr *ifcuser){
     // ifcdaqdrv_status      status;
-    // struct ifcdaqdrv_dev *ifcdevice;
+    struct ifcdaqdrv_dev *ifcdevice;
     // int32_t               i32_reg_val;
     // int32_t               i;
 
@@ -230,6 +210,8 @@ ifcdaqdrv_status ifcdaqdrv_disarm_device(struct ifcdaqdrv_usr *ifcuser){
     }
 
     pthread_mutex_lock(&ifcdevice->lock);
+
+    printf("[DEBUG] Disarming device...\n");
 
     ifcdevice->armed = 0;
 
@@ -244,8 +226,8 @@ ifcdaqdrv_status ifcdaqdrv_disarm_device(struct ifcdaqdrv_usr *ifcuser){
  */
 
 ifcdaqdrv_status ifcdaqdrv_wait_acq_end(struct ifcdaqdrv_usr *ifcuser) {
-    ifcdaqdrv_status      status;
-    int32_t               i32_reg_val;
+    // ifcdaqdrv_status      status;
+    // int32_t               i32_reg_val;
     struct ifcdaqdrv_dev *ifcdevice;
 
     ifcdevice = ifcuser->device;
@@ -254,17 +236,27 @@ ifcdaqdrv_status ifcdaqdrv_wait_acq_end(struct ifcdaqdrv_usr *ifcuser) {
         return status_no_device;
     }
 
+    if (!ifcdevice->databuffer) {
+        return status_no_device;
+    }
 
-    // TODO: FILL THE BUFFERS WITH RANDOM NUMBERS!!!!
+    srand((unsigned int) time(NULL));
 
-    sleep(1);
+    int i;
+    for (i = 0; i < ifcdevice->buffersize; i++)
+    {
+        ifcdevice->databuffer[i] = (int32_t) ((rand()%65536) - 32768);
+    }
+
+    // buffer filled with random numbers
+    printf("[DEBUG] Acq ended. Buffers filled with random data\n");
 
     if (!ifcdevice->armed) {
         return status_cancel;
     }
 
     ifcdaqdrv_disarm_device(ifcuser);
-    return status;
+    return status_success;
 }
 
 /*
@@ -272,7 +264,7 @@ ifcdaqdrv_status ifcdaqdrv_wait_acq_end(struct ifcdaqdrv_usr *ifcuser) {
  */
 
 ifcdaqdrv_status ifcdaqdrv_read_ai(struct ifcdaqdrv_usr *ifcuser, void *data) {
-    ifcdaqdrv_status      status;
+    // ifcdaqdrv_status      status;
     struct ifcdaqdrv_dev *ifcdevice;
 
     ifcdevice = ifcuser->device;
@@ -287,11 +279,20 @@ ifcdaqdrv_status ifcdaqdrv_read_ai(struct ifcdaqdrv_usr *ifcuser, void *data) {
         return status_device_armed;
     }
 
-    if(ifcdevice->read_ai) {
-        status = ifcdevice->read_ai(ifcdevice, data);
+    // if(ifcdevice->read_ai) {
+    //     status = ifcdevice->read_ai(ifcdevice, data);
+    //     pthread_mutex_unlock(&ifcdevice->lock);
+    //     return status;
+    // }
+
+    if (!ifcdevice->databuffer)
+    {
         pthread_mutex_unlock(&ifcdevice->lock);
-        return status;
+        return status_no_support;
     }
+
+    data = (void*) &ifcdevice->databuffer[0];
+    printf("[DEBUG] Reading function called. Passing buffer pointer:\n");
 
     pthread_mutex_unlock(&ifcdevice->lock);
     return status_no_support;
@@ -302,7 +303,7 @@ ifcdaqdrv_status ifcdaqdrv_read_ai(struct ifcdaqdrv_usr *ifcuser, void *data) {
  */
 
 ifcdaqdrv_status ifcdaqdrv_read_ai_ch(struct ifcdaqdrv_usr *ifcuser, uint32_t channel, void *data) {
-    ifcdaqdrv_status      status;
+    // ifcdaqdrv_status      status;
     struct ifcdaqdrv_dev *ifcdevice;
 
     ifcdevice = ifcuser->device;
@@ -321,11 +322,11 @@ ifcdaqdrv_status ifcdaqdrv_read_ai_ch(struct ifcdaqdrv_usr *ifcuser, uint32_t ch
         return status_device_armed;
     }
 
-    if(ifcdevice->read_ai_ch) {
-        status = ifcdevice->read_ai_ch(ifcdevice, channel, data);
-        pthread_mutex_unlock(&ifcdevice->lock);
-        return status;
-    }
+    // if(ifcdevice->read_ai_ch) {
+    //     status = ifcdevice->read_ai_ch(ifcdevice, channel, data);
+    //     pthread_mutex_unlock(&ifcdevice->lock);
+    //     return status;
+    // }
 
     pthread_mutex_unlock(&ifcdevice->lock);
     return status_no_support;
@@ -351,7 +352,7 @@ ifcdaqdrv_status ifcdaqdrv_set_clock_source(struct ifcdaqdrv_usr *ifcuser, ifcda
         return status_device_armed;
     }
 
-    runtime_data.clock_source = clock;
+    ifcdevice->rt_clock_source = clock;
     status = status_success;
 
     pthread_mutex_unlock(&ifcdevice->lock);
@@ -371,7 +372,7 @@ ifcdaqdrv_status ifcdaqdrv_get_clock_source(struct ifcdaqdrv_usr *ifcuser, ifcda
         return status_no_device;
     }
 
-    *clock = runtime_data.clock_source;
+    *clock = ifcdevice->rt_clock_source;
 
     return status_success;
 }
@@ -381,7 +382,7 @@ ifcdaqdrv_status ifcdaqdrv_get_clock_source(struct ifcdaqdrv_usr *ifcuser, ifcda
  */
 
 ifcdaqdrv_status ifcdaqdrv_set_clock_frequency(struct ifcdaqdrv_usr *ifcuser, double frequency) {
-    ifcdaqdrv_status      status;
+    // ifcdaqdrv_status      status;
     struct ifcdaqdrv_dev *ifcdevice;
 
     ifcdevice = ifcuser->device;
@@ -396,7 +397,7 @@ ifcdaqdrv_status ifcdaqdrv_set_clock_frequency(struct ifcdaqdrv_usr *ifcuser, do
         return status_device_armed;
     }
 
-    runtime_data.clock_frequency = frequency;
+    ifcdevice->rt_clock_frequency = frequency;
 
     pthread_mutex_unlock(&ifcdevice->lock);
     return status_success;
@@ -417,7 +418,7 @@ ifcdaqdrv_status ifcdaqdrv_get_clock_frequency(struct ifcdaqdrv_usr *ifcuser, do
         return status_argument_invalid;
     }
 
-    *frequency = runtime_data.clock_frequency;
+    *frequency = ifcdevice->rt_clock_frequency;
 
     return status_success;
 }
@@ -468,7 +469,7 @@ ifcdaqdrv_status ifcdaqdrv_get_clock_frequencies_valid(struct ifcdaqdrv_usr *ifc
  */
 
 ifcdaqdrv_status ifcdaqdrv_set_clock_divisor(struct ifcdaqdrv_usr *ifcuser, uint32_t divisor) {
-    ifcdaqdrv_status      status;
+    // ifcdaqdrv_status      status;
     struct ifcdaqdrv_dev *ifcdevice;
 
     ifcdevice = ifcuser->device;
@@ -487,7 +488,7 @@ ifcdaqdrv_status ifcdaqdrv_set_clock_divisor(struct ifcdaqdrv_usr *ifcuser, uint
         return status_device_armed;
     }
 
-    runtime_data.clock_divisor = divisor;
+    ifcdevice->rt_clock_divisor = divisor;
 
     pthread_mutex_unlock(&ifcdevice->lock);
     return status_success;
@@ -509,10 +510,10 @@ ifcdaqdrv_status ifcdaqdrv_get_clock_divisor(struct ifcdaqdrv_usr *ifcuser, uint
         return status_argument_invalid;
     }
 
-    if (!runtime_data.clock_divisor)
-        runtime_data.clock_divisor = 1;
+    if (!ifcdevice->rt_clock_divisor)
+        ifcdevice->rt_clock_divisor = 1;
 
-    *divisor = runtime_data.clock_divisor;
+    *divisor = ifcdevice->rt_clock_divisor;
 
     return status_success;
 }
@@ -546,14 +547,14 @@ ifcdaqdrv_status ifcdaqdrv_get_clock_divisor_range(struct ifcdaqdrv_usr *ifcuser
 
 ifcdaqdrv_status ifcdaqdrv_set_trigger(struct ifcdaqdrv_usr *ifcuser, ifcdaqdrv_trigger_type trigger, int32_t threshold,
                                        uint32_t mask, uint32_t rising_edge) {
-    ifcdaqdrv_status      status;
+    // ifcdaqdrv_status      status;
     struct ifcdaqdrv_dev *ifcdevice;
-    int32_t               i32_cs_val   = 0; // Control & Status value
-    int32_t               i32_trig_val = 0; // Trigger value
-    uint32_t              channel      = 0;
-    uint32_t              gpio         = 0;
-    uint32_t              channel_mask = 0;
-    uint32_t              ptq          = 0;
+    // int32_t               i32_cs_val   = 0; // Control & Status value
+    // int32_t               i32_trig_val = 0; // Trigger value
+    // uint32_t              channel      = 0;
+    // uint32_t              gpio         = 0;
+    // uint32_t              channel_mask = 0;
+    // uint32_t              ptq          = 0;
 
     ifcdevice = ifcuser->device;
     if (!ifcdevice) {
@@ -569,14 +570,14 @@ ifcdaqdrv_status ifcdaqdrv_set_trigger(struct ifcdaqdrv_usr *ifcuser, ifcdaqdrv_
 
     ifcdevice->trigger_type = trigger;
 
-    runtime_data.tr_trigger = trigger;
-    runtime_data.tr_edge = rising_edge;
-    runtime_data.tr_threshold = threshold;
-    runtime_data.tr_mask = mask;
+    ifcdevice->rt_tr_trigger = trigger;
+    ifcdevice->rt_tr_edge = rising_edge;
+    ifcdevice->rt_tr_threshold = threshold;
+    ifcdevice->rt_tr_mask = mask;
 
     pthread_mutex_unlock(&ifcdevice->lock);
 
-    return status;
+    return status_success;
 }
 
 /*
@@ -599,9 +600,9 @@ ifcdaqdrv_status ifcdaqdrv_get_trigger(struct ifcdaqdrv_usr *ifcuser, ifcdaqdrv_
         *trigger = ifcdevice->trigger_type;
     }
 
-    *rising_edge = runtime_data.tr_edge;
-    *threshold = runtime_data.tr_threshold;
-    *mask = runtime_data.tr_mask;
+    *rising_edge = ifcdevice->rt_tr_edge;
+    *threshold = ifcdevice->rt_tr_threshold;
+    *mask = ifcdevice->rt_tr_mask;
 
     return status_success;
 }
@@ -612,7 +613,7 @@ ifcdaqdrv_status ifcdaqdrv_get_trigger(struct ifcdaqdrv_usr *ifcuser, ifcdaqdrv_
 
 ifcdaqdrv_status ifcdaqdrv_set_average(struct ifcdaqdrv_usr *ifcuser, uint32_t average) {
     struct ifcdaqdrv_dev *ifcdevice;
-    ifcdaqdrv_status status;
+    // ifcdaqdrv_status status;
 
     ifcdevice = ifcuser->device;
     if (!ifcdevice) {
@@ -628,7 +629,7 @@ ifcdaqdrv_status ifcdaqdrv_set_average(struct ifcdaqdrv_usr *ifcuser, uint32_t a
     if (average == 0)
         return status_argument_range;
 
-    runtime_data.average = average;
+    ifcdevice->rt_average = average;
 
     pthread_mutex_unlock(&ifcdevice->lock);
     return status_success;
@@ -649,7 +650,7 @@ ifcdaqdrv_status ifcdaqdrv_get_average(struct ifcdaqdrv_usr *ifcuser, uint32_t *
         return status_argument_invalid;
     }
 
-    *average = runtime_data.average;
+    *average = ifcdevice->rt_average;
 
     return status_success;
 
@@ -695,9 +696,9 @@ ifcdaqdrv_status ifcdaqdrv_get_averages_valid(struct ifcdaqdrv_usr *ifcuser, uin
 
 ifcdaqdrv_status ifcdaqdrv_set_decimation(struct ifcdaqdrv_usr *ifcuser, uint32_t decimation) {
     uint32_t              i;
-    ifcdaqdrv_status      status;
+    // ifcdaqdrv_status      status;
     struct ifcdaqdrv_dev *ifcdevice;
-    int32_t               i32_reg_val;
+    // int32_t               i32_reg_val;
 
     ifcdevice = ifcuser->device;
     if (!ifcdevice) {
@@ -719,7 +720,7 @@ ifcdaqdrv_status ifcdaqdrv_set_decimation(struct ifcdaqdrv_usr *ifcuser, uint32_
                 return status_device_armed;
             }
 
-            runtime_data.decimation = decimation;
+            ifcdevice->rt_decimation = decimation;
             pthread_mutex_unlock(&ifcdevice->lock);
             return status_success;
         }
@@ -733,8 +734,8 @@ ifcdaqdrv_status ifcdaqdrv_set_decimation(struct ifcdaqdrv_usr *ifcuser, uint32_
 
 ifcdaqdrv_status ifcdaqdrv_get_decimation(struct ifcdaqdrv_usr *ifcuser, uint32_t *decimation) {
     struct ifcdaqdrv_dev *ifcdevice;
-    int32_t               i32_reg_val;
-    ifcdaqdrv_status      status;
+    // int32_t               i32_reg_val;
+    // ifcdaqdrv_status      status;
 
     ifcdevice = ifcuser->device;
     if (!ifcdevice) {
@@ -744,10 +745,10 @@ ifcdaqdrv_status ifcdaqdrv_get_decimation(struct ifcdaqdrv_usr *ifcuser, uint32_
         return status_argument_invalid;
     }
 
-    if (!runtime_data.decimation)
-        runtime_data.decimation = 1;
+    if (!ifcdevice->rt_decimation)
+        ifcdevice->rt_decimation = 1;
 
-    *decimation = runtime_data.decimation;
+    *decimation = ifcdevice->rt_decimation;
 
     return status_success;
 }
@@ -790,7 +791,7 @@ ifcdaqdrv_status ifcdaqdrv_get_decimations_valid(struct ifcdaqdrv_usr *ifcuser, 
  */
 
 ifcdaqdrv_status ifcdaqdrv_set_nsamples(struct ifcdaqdrv_usr *ifcuser, uint32_t nsamples) {
-    ifcdaqdrv_status      status;
+    // ifcdaqdrv_status      status;
     struct ifcdaqdrv_dev *ifcdevice;
 
     ifcdevice = ifcuser->device;
@@ -810,7 +811,7 @@ ifcdaqdrv_status ifcdaqdrv_set_nsamples(struct ifcdaqdrv_usr *ifcuser, uint32_t 
         return status_device_armed;
     }
     
-    runtime_data.nsamples = nsamples;
+    ifcdevice->rt_nsamples = nsamples;
 
     pthread_mutex_unlock(&ifcdevice->lock);
     return status_success;
@@ -831,7 +832,7 @@ ifcdaqdrv_status ifcdaqdrv_get_nsamples(struct ifcdaqdrv_usr *ifcuser, uint32_t 
         return status_argument_invalid;
     }
     
-    *nsamples = runtime_data.nsamples;
+    *nsamples = ifcdevice->rt_nsamples;
 
     return status_success;
 }
@@ -841,7 +842,7 @@ ifcdaqdrv_status ifcdaqdrv_get_nsamples(struct ifcdaqdrv_usr *ifcuser, uint32_t 
  */
 
 ifcdaqdrv_status ifcdaqdrv_set_npretrig(struct ifcdaqdrv_usr *ifcuser, uint32_t npretrig) {
-    ifcdaqdrv_status      status;
+    // ifcdaqdrv_status      status;
     struct ifcdaqdrv_dev *ifcdevice;
     ifcdevice = ifcuser->device;
 
@@ -856,7 +857,7 @@ ifcdaqdrv_status ifcdaqdrv_set_npretrig(struct ifcdaqdrv_usr *ifcuser, uint32_t 
         return status_device_armed;
     }
 
-    runtime_data.npretrig = npretrig;
+    ifcdevice->rt_npretrig = npretrig;
 
     pthread_mutex_unlock(&ifcdevice->lock);
     return status_success;
@@ -867,7 +868,7 @@ ifcdaqdrv_status ifcdaqdrv_set_npretrig(struct ifcdaqdrv_usr *ifcuser, uint32_t 
  */
 
 ifcdaqdrv_status ifcdaqdrv_get_npretrig(struct ifcdaqdrv_usr *ifcuser, uint32_t *npretrig) {
-    ifcdaqdrv_status      status;
+    // ifcdaqdrv_status      status;
     struct ifcdaqdrv_dev *ifcdevice;
 
     ifcdevice = ifcuser->device;
@@ -881,7 +882,7 @@ ifcdaqdrv_status ifcdaqdrv_get_npretrig(struct ifcdaqdrv_usr *ifcuser, uint32_t 
     /* Take mutex since we have to read out multiple values */
     pthread_mutex_lock(&ifcdevice->lock);
     
-    *npretrig = runtime_data.npretrig;
+    *npretrig = ifcdevice->rt_npretrig;
 
     pthread_mutex_unlock(&ifcdevice->lock);
 
@@ -893,16 +894,16 @@ ifcdaqdrv_status ifcdaqdrv_get_npretrig(struct ifcdaqdrv_usr *ifcuser, uint32_t 
  */
 
 ifcdaqdrv_status ifcdaqdrv_set_gain(struct ifcdaqdrv_usr *ifcuser, uint32_t channel, double gain) {
-    ifcdaqdrv_status      status;
+    // ifcdaqdrv_status      status;
     struct ifcdaqdrv_dev *ifcdevice;
 
     ifcdevice = ifcuser->device;
     if (!ifcdevice) {
         return status_no_device;
     }
-    if (!ifcdevice->set_gain) {
-        return status_no_support;
-    }
+    // if (!ifcdevice->set_gain) {
+    //     return status_no_support;
+    // }
 
     pthread_mutex_lock(&ifcdevice->lock);
 
@@ -911,8 +912,7 @@ ifcdaqdrv_status ifcdaqdrv_set_gain(struct ifcdaqdrv_usr *ifcuser, uint32_t chan
         return status_device_armed;
     }
 
-    runtime_data.channel_gain[channel] = gain;    
-
+    ifcdevice->rt_channel_gain[channel] = gain;    
 
     pthread_mutex_unlock(&ifcdevice->lock);
     return status_success;
@@ -933,11 +933,11 @@ ifcdaqdrv_status ifcdaqdrv_get_gain(struct ifcdaqdrv_usr *ifcuser, uint32_t chan
     if (channel > 7)
         return status_argument_invalid;
 
-    if (!runtime_data.channel_gain[channel]) {
-        runtime_data.channel_gain[channel] = 1.0;
+    if (!ifcdevice->rt_channel_gain[channel]) {
+        ifcdevice->rt_channel_gain[channel] = 1.0;
     }
 
-    *gain = runtime_data.channel_gain[channel];
+    *gain = ifcdevice->rt_channel_gain[channel];
 
     return status_success;
 }
@@ -995,7 +995,7 @@ ifcdaqdrv_status ifcdaqdrv_get_resolution(struct ifcdaqdrv_usr *ifcuser, uint32_
  */
 
 ifcdaqdrv_status ifcdaqdrv_set_pattern(struct ifcdaqdrv_usr *ifcuser, uint32_t channel, ifcdaqdrv_pattern pattern) {
-    ifcdaqdrv_status      status;
+    // ifcdaqdrv_status      status;
     struct ifcdaqdrv_dev *ifcdevice;
 
     ifcdevice = ifcuser->device;
@@ -1011,7 +1011,7 @@ ifcdaqdrv_status ifcdaqdrv_set_pattern(struct ifcdaqdrv_usr *ifcuser, uint32_t c
     }
 
     //status = ifcdevice->set_pattern(ifcuser->device, channel, pattern);
-    runtime_data.ch_pattern[ch_pattern] = pattern;
+    ifcdevice->rt_ch_pattern[channel] = pattern;
 
     pthread_mutex_unlock(&ifcdevice->lock);
     return status_success;
@@ -1033,7 +1033,7 @@ ifcdaqdrv_status ifcdaqdrv_get_pattern(struct ifcdaqdrv_usr *ifcuser, uint32_t c
     //     return status_success;
     // }
 
-    *pattern = runtime_data.ch_pattern[channel];
+    *pattern = ifcdevice->rt_ch_pattern[channel];
 
     return status_success;
 }
@@ -1068,6 +1068,7 @@ ifcdaqdrv_status ifcdaqdrv_get_nchannels(struct ifcdaqdrv_usr *ifcuser, uint32_t
 
 ifcdaqdrv_status ifcdaqdrv_get_manufacturer(struct ifcdaqdrv_usr *ifcuser, char *manufacturer, size_t buf_len){
     struct ifcdaqdrv_dev *ifcdevice;
+    char *simulated = "ESS ICS";
 
     ifcdevice = ifcuser->device;
     if (!ifcdevice) {
@@ -1076,14 +1077,11 @@ ifcdaqdrv_status ifcdaqdrv_get_manufacturer(struct ifcdaqdrv_usr *ifcuser, char 
     if (!manufacturer) {
         return status_argument_invalid;
     }
-    if (!ifcdevice->fru_id || !ifcdevice->fru_id->manufacturer) {
-        return status_internal;
-    }
 
     manufacturer[0] = '\0';
-    strncat(manufacturer, ifcdevice->fru_id->manufacturer, buf_len - 1);
+    strncat(manufacturer, simulated, buf_len - 1);
 
-    if (buf_len < strlen(ifcdevice->fru_id->manufacturer)) {
+    if (buf_len < strlen(simulated)) {
         return status_buf_len;
     }
 
@@ -1096,6 +1094,7 @@ ifcdaqdrv_status ifcdaqdrv_get_manufacturer(struct ifcdaqdrv_usr *ifcuser, char 
 
 ifcdaqdrv_status ifcdaqdrv_get_product_name(struct ifcdaqdrv_usr *ifcuser, char *product_name, size_t buf_len){
     struct ifcdaqdrv_dev *ifcdevice;
+    char *simulated = "SIM ADC";
 
     ifcdevice = ifcuser->device;
     if (!ifcdevice) {
@@ -1104,14 +1103,11 @@ ifcdaqdrv_status ifcdaqdrv_get_product_name(struct ifcdaqdrv_usr *ifcuser, char 
     if (!product_name) {
         return status_argument_invalid;
     }
-    if (!ifcdevice->fru_id || !ifcdevice->fru_id->product_name) {
-        return status_internal;
-    }
 
     product_name[0] = '\0';
-    strncat(product_name, ifcdevice->fru_id->product_name, buf_len - 1);
+    strncat(product_name, simulated, buf_len - 1);
 
-    if (buf_len < strlen(ifcdevice->fru_id->product_name)) {
+    if (buf_len < strlen(simulated)) {
         return status_buf_len;
     }
 
@@ -1123,7 +1119,7 @@ ifcdaqdrv_status ifcdaqdrv_get_product_name(struct ifcdaqdrv_usr *ifcuser, char 
  */
 
 ifcdaqdrv_status ifcdaqdrv_get_fw_version(struct ifcdaqdrv_usr *ifcuser, uint8_t *version) {
-    ifcdaqdrv_status      status;
+    // ifcdaqdrv_status      status;
     struct ifcdaqdrv_dev *ifcdevice;
 
     ifcdevice = ifcuser->device;
@@ -1135,13 +1131,11 @@ ifcdaqdrv_status ifcdaqdrv_get_fw_version(struct ifcdaqdrv_usr *ifcuser, uint8_t
         return status_argument_invalid;
     }
 
-    if (!ifcdevice->get_signature) {
-        return status_no_support;
-    }
+    *version = 0;
 
-    status = ifcdevice->get_signature(ifcdevice, 0, version, 0);
+    //status = ifcdevice->get_signature(ifcdevice, 0, version, 0);
 
-    return status;
+    return status_success;
 }
 
 /*
@@ -1149,7 +1143,7 @@ ifcdaqdrv_status ifcdaqdrv_get_fw_version(struct ifcdaqdrv_usr *ifcuser, uint8_t
  */
 
 ifcdaqdrv_status ifcdaqdrv_get_fw_revision(struct ifcdaqdrv_usr *ifcuser, uint8_t *revision) {
-    ifcdaqdrv_status      status;
+    // ifcdaqdrv_status      status;
     struct ifcdaqdrv_dev *ifcdevice;
 
     ifcdevice = ifcuser->device;
@@ -1161,9 +1155,10 @@ ifcdaqdrv_status ifcdaqdrv_get_fw_revision(struct ifcdaqdrv_usr *ifcuser, uint8_
         return status_argument_invalid;
     }
 
-    status = ifcdevice->get_signature(ifcdevice, revision, 0, 0);
+    //status = ifcdevice->get_signature(ifcdevice, revision, 0, 0);
+    *revision = 0;
 
-    return status;
+    return status_success;
 }
 
 /*
@@ -1173,7 +1168,7 @@ ifcdaqdrv_status ifcdaqdrv_get_fw_revision(struct ifcdaqdrv_usr *ifcuser, uint8_
 ifcdaqdrv_status ifcdaqdrv_debug(struct ifcdaqdrv_usr *ifcuser) {
     struct ifcdaqdrv_dev *ifcdevice;
     int i;
-    int32_t               i32_reg_val;
+    int32_t               i32_reg_val = 0;
 
     ifcdevice = ifcuser->device;
     if (!ifcdevice) {
@@ -1181,7 +1176,7 @@ ifcdaqdrv_status ifcdaqdrv_debug(struct ifcdaqdrv_usr *ifcuser) {
     }
 
     for (i = 0; i < 8; ++i) {
-        ifc_fmc_tcsr_read(ifcdevice, i, &i32_reg_val);
+        //ifc_fmc_tcsr_read(ifcdevice, i, &i32_reg_val);
         printf("[0x%02x]: 0x%08x\n", i, i32_reg_val);
     }
     return status_success;

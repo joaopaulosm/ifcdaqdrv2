@@ -1,54 +1,33 @@
-#include <stdlib.h>
-#include <string.h>
+// #include <stdlib.h>
+// #include <string.h>
+// #include <stdint.h>
+// #include <unistd.h>
+// #include <libudev.h>
+// #include <fcntl.h>
+// #include <sys/ioctl.h>
+// #include <pthread.h>
+#include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <unistd.h>
-#include <libudev.h>
-#include <fcntl.h>
-#include <sys/ioctl.h>
-#include <pthread.h>
+#include <ctype.h>
+#include <string.h>
+#include <signal.h>
+#include <inttypes.h>
 
-#include "debug.h"
-#include "ifcdaqdrv.h"
-#include "ifcdaqdrv_utils.h"
-#include "ifcdaqdrv_fmc.h"
+
+// #include "debug.h"
+#include "ifcdaqdrv2.h"
 #include "ifcdaqdrv_sim.h"
-#include "ifcdaqdrv_scope.h"
 
 static const uint32_t decimations[] = {1, 2, 5, 10, 20, 50, 100, 200, 0};
 static const uint32_t averages[] = {1, 4, 8, 16, 32, 64, 128, 256, 0};
 static const double   valid_clocks[] = {2400e6, 2500e6, 0};
 
-struct ADCSIM_runtime_data runtime_data;
-
 ifcdaqdrv_status ADCSim_register(struct ifcdaqdrv_dev *ifcdevice) {
-    int status = 0;
     uint32_t nsamples_max;
+    int i;
     
-    ifcdevice->init_adc              = ADCSim_init_adc;
-    ifcdevice->get_gain              = ADCSim_get_gain;
-    ifcdevice->set_gain              = ADCSim_set_gain;
-    ifcdevice->set_nsamples          = ifcdaqdrv_scope_set_nsamples;
-    ifcdevice->get_nsamples          = ifcdaqdrv_scope_get_nsamples;
-    ifcdevice->set_trigger_threshold = ADCSim_set_trigger_threshold;
-    ifcdevice->get_trigger_threshold = ADCSim_get_trigger_threshold;
-    ifcdevice->set_clock_frequency   = ADCSim_set_clock_frequency;
-    ifcdevice->get_clock_frequency   = ADCSim_get_clock_frequency;
-    ifcdevice->set_clock_source      = ADCSim_set_clock_source;
-    ifcdevice->get_clock_source      = ADCSim_get_clock_source;
-    ifcdevice->set_clock_divisor     = ADCSim_set_clock_divisor;
-    ifcdevice->get_clock_divisor     = ADCSim_get_clock_divisor;
-
-    ifcdevice->set_pattern           = ADCSim_set_test_pattern;
-    ifcdevice->get_pattern           = ADCSim_get_test_pattern;
-
-    // ifcdevice->read_ai_ch            = ifcdaqdrv_scope_read_ai_ch;
-    ifcdevice->read_ai               = ADCSim_read;
-
-    // ifcdevice->normalize_ch          = ADCSim_read_ch;
-    // ifcdevice->normalize             = ADCSim_read;
-
-    ifcdevice->mode_switch = ifcdaqdrv_scope_switch_mode;
-
     ifcdevice->mode        = ifcdaqdrv_acq_mode_sram;
     ifcdevice->sample_size = 2;
     ifcdevice->nchannels   = 8;
@@ -70,59 +49,138 @@ ifcdaqdrv_status ADCSim_register(struct ifcdaqdrv_dev *ifcdevice) {
     nsamples_max = 16 * 1024;
 
     ifcdevice->sram_size = nsamples_max * ifcdevice->sample_size;
-    ifcdevice->smem_size = 256 * 1024 * 1024;
+    
+    //ifcdevice->smem_size = 256 * 1024 * 1024;
+    ifcdevice->smem_size = 1 * 1024 * 1024;
 
     /* The subsystem lock is used to serialize access to the serial interface
      * since it requires several write/read pci accesses */
     pthread_mutex_init(&ifcdevice->sub_lock, NULL);
 
-    return status;
+    /* Runtime data initalization */
+    ifcdevice->rt_clock_source = ifcdaqdrv_clock_internal;
+
+    for (i=0; i<8; i++)
+    {
+    	ifcdevice->rt_channel_gain[i] = 1.0;
+    	ifcdevice->rt_ch_pattern[i] = ifcdaqdrv_pattern_none;
+    }
+
+    ifcdevice->rt_dataformat = ifcdaqdrv_dataformat_unsigned;
+    ifcdevice->rt_clock_frequency = 2500e6;
+    ifcdevice->rt_clock_divisor = 1;
+    ifcdevice->rt_tr_trigger = ifcdaqdrv_trigger_soft;
+    ifcdevice->rt_tr_threshold = 0;
+    ifcdevice->rt_tr_mask = 0;
+    ifcdevice->rt_tr_edge = 0;
+    ifcdevice->rt_average = 1;
+    ifcdevice->rt_decimation = 1;
+    ifcdevice->rt_nsamples = 16*1024;
+    ifcdevice->rt_npretrig = 0;
+
+    ifcdevice->databuffer = NULL;
+    ifcdevice->buffersize = 0;
+
+    return status_success;
 }
 
-ifcdaqdrv_status ADCSim_init_adc(struct ifcdaqdrv_dev *ifcdevice)
-{
-	int i;
+void ifcdaqdrv_free(struct ifcdaqdrv_dev *ifcdevice){
+    // // TODO finish free implementaiton
+    // if(ifcdevice->all_ch_buf) {
+    //     free(ifcdevice->all_ch_buf);
+    //     ifcdevice->all_ch_buf = NULL;
+    // }
 
-	// set clock source internal
-	ADCSim_set_clock_source(ifcdevice, ifcdaqdrv_clock_internal);
+    // if(ifcdevice->smem_dma_buf) {
+    //     pevx_buf_free(ifcdevice->card, ifcdevice->smem_dma_buf);
+    //     free(ifcdevice->smem_dma_buf);
+    //     ifcdevice->smem_dma_buf = NULL;
+    // }
 
-	// set gain to 1
-	for (i=0; i<8; i++)
-		runtime_data.channel_gain[i] = 1.0;
+    // if(ifcdevice->sram_dma_buf){
+    //     pevx_buf_free(ifcdevice->card, ifcdevice->sram_dma_buf);
+    //     free(ifcdevice->sram_dma_buf);
+    //     ifcdevice->sram_dma_buf = NULL;
+    // }
 
-	// set unsigned data format
-	runtime_data.dataformat = ifcdaqdrv_dataformat_unsigned;	
+    // if(ifcdevice->fru_id) {
+    //     if(ifcdevice->fru_id->product_name) {
+    //         free(ifcdevice->fru_id->product_name);
+    //     }
+    //     if(ifcdevice->fru_id->manufacturer) {
+    //         free(ifcdevice->fru_id->manufacturer);
+    //     }
+    //     free(ifcdevice->fru_id);
+    //     ifcdevice->fru_id = NULL;
+    // }
 
-	return status_success;
+    if (ifcdevice->databuffer)
+    {
+    	free(ifcdevice->databuffer);
+    	ifcdevice->databuffer = NULL;
+    	ifcdevice->buffersize = 0;
+    }
+
 }
 
+ifcdaqdrv_status ifcdaqdrv_dma_allocate(struct ifcdaqdrv_dev *ifcdevice) {
+//     void *p;
 
-ifcdaqdrv_status ADCSim_set_clock_source(struct ifcdaqdrv_dev *ifcdevice, ifcdaqdrv_clock clock)
-{
-	switch (clock)
-	{
-		case ifcdaqdrv_clock_internal:
-			ADCSim_set_clock_frequency(ifcdevice, 1000e6);
-			ADCSim_set_clock_divisor(ifcdevice, 10);
-			runtime_data.clock_source = ifcdaqdrv_clock_internal;
-			break;
+    ifcdevice->databuffer = calloc(4*1024*1024, sizeof(int32_t));
+    if (!ifcdevice->databuffer) {
+        return status_internal;
+    }
 
-		case ifcdaqdrv_clock_external:
-			ADCSim_set_clock_frequency(ifcdevice, 250e6);
-			ADCSim_set_clock_divisor(ifcdevice, 1);
-			runtime_data.clock_source = ifcdaqdrv_clock_external;
-			break;
-	}
+    ifcdevice->buffersize = 4*1024*1024;
 
-	return status_success;
-}
 
-ifcdaqdrv_status ADCSim_get_clock_source(struct ifcdaqdrv_dev *ifcdevice, ifcdaqdrv_clock *clock)
-{
-	if (runtime_data.clock_source == ifcdaqdrv_clock_external)||(runtime_data.clock_source == ifcdaqdrv_clock_internal) 
-		return runtime_data.clock_source;
-	else
-		return ifcdaqdrv_clock_internal;
+//     ifcdevice->sram_dma_buf->size = ifcdevice->sram_size;
+
+//     TRACE((5, "Trying to allocate %dkiB in kernel\n", ifcdevice->sram_size / 1024));
+//     if (pevx_buf_alloc(ifcdevice->card, ifcdevice->sram_dma_buf) == NULL) {
+//         goto err_sram_buf;
+//     }
+
+//     ifcdevice->smem_dma_buf = calloc(1, sizeof(struct pev_ioctl_buf));
+//     if (!ifcdevice->smem_dma_buf) {
+//         goto err_smem_ctl;
+//     }
+
+//     // Try to allocate as large dma memory as possible
+//     ifcdevice->smem_dma_buf->size = ifcdevice->smem_size;
+//     do {
+//         TRACE((5, "Trying to allocate %dMiB in kernel\n", ifcdevice->smem_dma_buf->size / 1024 / 1024));
+//         p = pevx_buf_alloc(ifcdevice->card, ifcdevice->smem_dma_buf);
+//     } while (p == NULL && (ifcdevice->smem_dma_buf->size >>= 1) > 0);
+
+//     if(!p) {
+//         goto err_smem_buf;
+//     }
+
+//     TRACE((5, "Trying to allocate %dMiB in userspace\n", ifcdevice->smem_size / 1024 / 1024));
+//     ifcdevice->all_ch_buf = calloc(ifcdevice->smem_size, 1);
+//     if(!ifcdevice->all_ch_buf){
+//         goto err_smem_user_buf;
+//     }
+
+//     return status_success;
+
+// err_smem_user_buf:
+//     pevx_buf_free(ifcdevice->card, ifcdevice->smem_dma_buf);
+
+// err_smem_buf:
+//     free(ifcdevice->smem_dma_buf);
+
+// err_smem_ctl:
+//     pevx_buf_free(ifcdevice->card, ifcdevice->sram_dma_buf);
+
+// err_sram_buf:
+//     free(ifcdevice->sram_dma_buf);
+
+// err_sram_ctl:
+//     return status_internal;
+
+	return 0;
 }
 
 
