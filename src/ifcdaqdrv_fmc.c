@@ -5,18 +5,22 @@
 #include <ctype.h>
 #include <string.h>
 
-#include <pevxulib.h>
-#include <pevioctl.h>
-#include <pevulib.h>
+#ifdef TOSCA_USRLIB
+// #include <pevioctl.h>
+// #include <pevxulib.h>
+// #include <pevulib.h>
+#include <tscioctl.h>
+#include <tsculib.h>
+#endif
 
 #include "debug.h"
-#include "ifcdaqdrv.h"
+#include "ifcdaqdrv2.h"
 #include "ifcdaqdrv_utils.h"
 #include "ifcdaqdrv_fmc.h"
 
 
 ifcdaqdrv_status ifc_fmc_eeprom_read(struct ifcdaqdrv_dev *ifcdevice, uint16_t address, uint8_t *data){
-    int  status;
+    int  status = 0;
     uint device = 0x01010051;
     uint reg_val;
 
@@ -37,12 +41,19 @@ ifcdaqdrv_status ifc_fmc_eeprom_read(struct ifcdaqdrv_dev *ifcdevice, uint16_t a
         device |= IFC_FMC2_I2C_BASE;
         break;
     }
-
-    status = pevx_i2c_read(ifcdevice->card, device, pev_swap_16(address), &reg_val);
+    
+#ifdef TOSCA_USRLIB
+    /* TODO: check usage of i2c_read */
+    //status = pevx_i2c_read(ifcdevice->card, device, pev_swap_16(address), &reg_val);
+    status = tsc_i2c_read(ifcdevice->card, device, tsc_swap_16(address), &reg_val);
 
     if (!((status & I2C_CTL_EXEC_MASK) == I2C_CTL_EXEC_DONE)) {
         return status_i2c_nack;
     }
+#else
+    reg_val = 0;
+#endif
+
 
     *data = (uint8_t)reg_val;
     return status_success;

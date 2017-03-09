@@ -5,16 +5,21 @@
 #include <ctype.h>
 #include <string.h>
 #include <signal.h>
+#include <inttypes.h>
 
-#include <pevxulib.h>
-#include <pevioctl.h>
-#include <pevulib.h>
+#ifdef TOSCA_USRLIB
+// #include <pevioctl.h>
+// #include <pevxulib.h>
+// #include <pevulib.h>
+#include <tscioctl.h>
+#include <tsculib.h>
+#endif
 
 #include "debug.h"
-#include "ifcdaqdrv.h"
+#include "ifcdaqdrv2.h"
 #include "ifcdaqdrv_utils.h"
 #include "ifcdaqdrv_fmc.h"
-#include "ifcdaqdrv_acq420.h"
+// #include "ifcdaqdrv_acq420.h"
 #include "ifcdaqdrv_adc3110.h"
 #include "ifcdaqdrv_scope.h"
 
@@ -29,7 +34,13 @@ ifcdaqdrv_status ifc_tcsr_read(struct ifcdaqdrv_dev *ifcdevice, int offset, int 
     }
 #endif
 
-    *i32_reg_val = pevx_csr_rd(ifcdevice->card, TCSR_ACCESS_ADJUST + offset + (register_idx * 4));
+#ifdef TOSCA_USRLIB
+    // *i32_reg_val = pevx_csr_rd(ifcdevice->card, TCSR_ACCESS_ADJUST + offset + (register_idx * 4));
+    *i32_reg_val = tsc_csr_rd(TCSR_ACCESS_ADJUST + offset + (register_idx * 4));
+#else
+    *i32_reg_val = 0;
+#endif
+
     return 0;
 }
 
@@ -45,15 +56,18 @@ ifcdaqdrv_status ifc_tcsr_write(struct ifcdaqdrv_dev *ifcdevice, int offset, int
     int32_t i32_reg_val;
     ifc_tcsr_read(ifcdevice, offset, register_idx, &i32_reg_val);
 
-    TRACE((7, "crate %d: CSR[0x%x:%02x] %08x (befor write)\n", ifcdevice->card, offset, register_idx, i32_reg_val));
-    TRACE((7, "crate %d: CSR[0x%x:%02x] %08x (write)\n",       ifcdevice->card, offset, register_idx, value));
+    LOG((7, "crate %d: CSR[0x%x:%02x] %08x (befor write)\n", ifcdevice->card, offset, register_idx, i32_reg_val));
+    LOG((7, "crate %d: CSR[0x%x:%02x] %08x (write)\n",       ifcdevice->card, offset, register_idx, value));
 #endif
 
-    pevx_csr_wr(ifcdevice->card, TCSR_ACCESS_ADJUST + offset + (register_idx * 4), value);
+#ifdef TOSCA_USRLIB
+    // pevx_csr_wr(ifcdevice->card, TCSR_ACCESS_ADJUST + offset + (register_idx * 4), value);
+    tsc_csr_wr(TCSR_ACCESS_ADJUST + offset + (register_idx * 4), value);
+#endif
 
 #if DEBUG
     ifc_tcsr_read(ifcdevice, offset, register_idx, &i32_reg_val);
-    TRACE((7, "crate %d: CSR[0x%x:%02x] %08x (after write)\n", ifcdevice->card, offset, register_idx, i32_reg_val));
+    LOG((7, "crate %d: CSR[0x%x:%02x] %08x (after write)\n", ifcdevice->card, offset, register_idx, i32_reg_val));
 #endif
     return 0;
 }
@@ -70,21 +84,29 @@ ifcdaqdrv_status ifc_tcsr_setclr(struct ifcdaqdrv_dev *ifcdevice, int offset, in
     }
 #endif
 
-    i32_reg_val = pevx_csr_rd(ifcdevice->card, TCSR_ACCESS_ADJUST + offset + (register_idx * 4));
+#ifdef TOSCA_USRLIB
+    //i32_reg_val = pevx_csr_rd(ifcdevice->card, TCSR_ACCESS_ADJUST + offset + (register_idx * 4));
+    i32_reg_val = tsc_csr_rd(TCSR_ACCESS_ADJUST + offset + (register_idx * 4));
+#else
+    i32_reg_val = 0;
+#endif
 
 #if DEBUG
-    TRACE((7, "crate %d: CSR[0x%x:%02x] %08x (befor setclr)\n", ifcdevice->card, offset, register_idx, i32_reg_val));
-    TRACE((7, "crate %d: CSR[0x%x:%02x] set=%08x clr=%08x\n",   ifcdevice->card, offset, register_idx, setmask, clrmask));
+    LOG((7, "crate %d: CSR[0x%x:%02x] %08x (befor setclr)\n", ifcdevice->card, offset, register_idx, i32_reg_val));
+    LOG((7, "crate %d: CSR[0x%x:%02x] set=%08x clr=%08x\n",   ifcdevice->card, offset, register_idx, setmask, clrmask));
 #endif
 
     i32_reg_val &= ~clrmask;
     i32_reg_val |= setmask;
 
-    pevx_csr_wr(ifcdevice->card, TCSR_ACCESS_ADJUST + offset + (register_idx * 4), i32_reg_val);
+#ifdef TOSCA_USRLIB
+    //pevx_csr_wr(ifcdevice->card, TCSR_ACCESS_ADJUST + offset + (register_idx * 4), i32_reg_val);
+    tsc_csr_wr(TCSR_ACCESS_ADJUST + offset + (register_idx * 4), i32_reg_val);
+#endif
 
 #if DEBUG
     ifc_tcsr_read(ifcdevice, offset, register_idx, &i32_reg_val);
-    TRACE((7, "crate %d: CSR[0x%x:%02x] %08x (after setclr)\n", ifcdevice->card, offset, register_idx, i32_reg_val));
+    LOG((7, "crate %d: CSR[0x%x:%02x] %08x (after setclr)\n", ifcdevice->card, offset, register_idx, i32_reg_val));
 #endif
     return 0;
 }
@@ -157,13 +179,19 @@ void ifcdaqdrv_free(struct ifcdaqdrv_dev *ifcdevice){
     }
 
     if(ifcdevice->smem_dma_buf) {
-        pevx_buf_free(ifcdevice->card, ifcdevice->smem_dma_buf);
+#ifdef TOSCA_USRLIB
+        //pevx_buf_free(ifcdevice->card, ifcdevice->smem_dma_buf);
+        tsc_kbuf_free(ifcdevice->smem_dma_buf);
+#endif
         free(ifcdevice->smem_dma_buf);
         ifcdevice->smem_dma_buf = NULL;
     }
 
     if(ifcdevice->sram_dma_buf){
-        pevx_buf_free(ifcdevice->card, ifcdevice->sram_dma_buf);
+#ifdef TOSCA_USRLIB
+        // pevx_buf_free(ifcdevice->card, ifcdevice->sram_dma_buf);
+        tsc_kbuf_free(ifcdevice->sram_dma_buf);
+#endif
         free(ifcdevice->sram_dma_buf);
         ifcdevice->sram_dma_buf = NULL;
     }
@@ -183,19 +211,29 @@ void ifcdaqdrv_free(struct ifcdaqdrv_dev *ifcdevice){
 ifcdaqdrv_status ifcdaqdrv_dma_allocate(struct ifcdaqdrv_dev *ifcdevice) {
     void *p;
 
-    ifcdevice->sram_dma_buf = calloc(1, sizeof(struct pev_ioctl_buf));
+    //ifcdevice->sram_dma_buf = calloc(1, sizeof(struct pev_ioctl_buf));
+    ifcdevice->sram_dma_buf = calloc(1, sizeof(struct tsc_ioctl_kbuf_req));
     if (!ifcdevice->sram_dma_buf) {
         goto err_sram_ctl;
     }
 
     ifcdevice->sram_dma_buf->size = ifcdevice->sram_size;
 
-    TRACE((5, "Trying to allocate %dkiB in kernel\n", ifcdevice->sram_size / 1024));
-    if (pevx_buf_alloc(ifcdevice->card, ifcdevice->sram_dma_buf) == NULL) {
+    LOG((5, "Trying to allocate %dkiB in kernel\n", ifcdevice->sram_size / 1024));
+
+#ifdef TOSCA_USRLIB
+    // if (pevx_buf_alloc(ifcdevice->card, ifcdevice->sram_dma_buf) == NULL) {
+    //     goto err_sram_buf;
+    // }
+
+    if (tsc_kbuf_alloc(ifcdevice->sram_dma_buf) == NULL) {
         goto err_sram_buf;
     }
 
-    ifcdevice->smem_dma_buf = calloc(1, sizeof(struct pev_ioctl_buf));
+#endif
+
+    //ifcdevice->smem_dma_buf = calloc(1, sizeof(struct pev_ioctl_buf));
+    ifcdevice->smem_dma_buf = calloc(1, sizeof(struct tsc_ioctl_kbuf_req));
     if (!ifcdevice->smem_dma_buf) {
         goto err_smem_ctl;
     }
@@ -203,15 +241,23 @@ ifcdaqdrv_status ifcdaqdrv_dma_allocate(struct ifcdaqdrv_dev *ifcdevice) {
     // Try to allocate as large dma memory as possible
     ifcdevice->smem_dma_buf->size = ifcdevice->smem_size;
     do {
-        TRACE((5, "Trying to allocate %dMiB in kernel\n", ifcdevice->smem_dma_buf->size / 1024 / 1024));
-        p = pevx_buf_alloc(ifcdevice->card, ifcdevice->smem_dma_buf);
+        LOG((5, "Trying to allocate %dMiB in kernel\n", ifcdevice->smem_dma_buf->size / 1024 / 1024));
+
+#ifdef TOSCA_USRLIB
+        //p = pevx_buf_alloc(ifcdevice->card, ifcdevice->smem_dma_buf);
+        p = tsc_kbuf_alloc(ifcdevice->smem_dma_buf);
+#else
+        p = NULL;
+#endif
+
+
     } while (p == NULL && (ifcdevice->smem_dma_buf->size >>= 1) > 0);
 
     if(!p) {
         goto err_smem_buf;
     }
 
-    TRACE((5, "Trying to allocate %dMiB in userspace\n", ifcdevice->smem_size / 1024 / 1024));
+    LOG((5, "Trying to allocate %dMiB in userspace\n", ifcdevice->smem_size / 1024 / 1024));
     ifcdevice->all_ch_buf = calloc(ifcdevice->smem_size, 1);
     if(!ifcdevice->all_ch_buf){
         goto err_smem_user_buf;
@@ -220,13 +266,20 @@ ifcdaqdrv_status ifcdaqdrv_dma_allocate(struct ifcdaqdrv_dev *ifcdevice) {
     return status_success;
 
 err_smem_user_buf:
-    pevx_buf_free(ifcdevice->card, ifcdevice->smem_dma_buf);
+#ifdef TOSCA_USRLIB
+    //pevx_buf_free(ifcdevice->card, ifcdevice->smem_dma_buf);
+    tsc_kbuf_free(ifcdevice->smem_dma_buf);
+#endif
+ 
 
 err_smem_buf:
     free(ifcdevice->smem_dma_buf);
 
 err_smem_ctl:
-    pevx_buf_free(ifcdevice->card, ifcdevice->sram_dma_buf);
+#ifdef TOSCA_USRLIB
+    //pevx_buf_free(ifcdevice->card, ifcdevice->smem_dma_buf);
+    tsc_kbuf_free(ifcdevice->sram_dma_buf);
+#endif
 
 err_sram_buf:
     free(ifcdevice->sram_dma_buf);
@@ -244,7 +297,9 @@ err_sram_ctl:
  * @param size Size in bytes
  */
 ifcdaqdrv_status ifcdaqdrv_dma_read_unlocked(struct ifcdaqdrv_dev *ifcdevice, uint32_t src_addr, uint8_t src_space, uint8_t src_mode, uint32_t des_addr, uint8_t des_space, uint8_t des_mode, uint32_t size) {
-    struct pev_ioctl_dma_req dma_req = {0};
+    //struct pev_ioctl_dma_req dma_req = {0};
+    struct tsc_ioctl_dma_req dma_req = {0};
+
     int status;
     uint32_t valid_dma_status;
 
@@ -269,10 +324,16 @@ ifcdaqdrv_status ifcdaqdrv_dma_read_unlocked(struct ifcdaqdrv_dev *ifcdevice, ui
     // dma_req.wait_mode = DMA_WAIT_1S | (5<<4);
     // dma_req.dma_status = 0;
 
-    status             = pevx_dma_move(ifcdevice->card, &dma_req);
+#ifdef TOSCA_USRLIB
+    // status = pevx_dma_move(ifcdevice->card, &dma_req);
+    status = tsc_dma_move(&dma_req);
+#else
+    status = status_success;
+#endif
+
     if (status != 0) {
 #if DEBUG
-        TRACE((4, "%s() pevx_dma_move() == %d status = 0x%08x\n", __FUNCTION__, status, dma_req.dma_status));
+        LOG((4, "%s() pevx_dma_move() == %d status = 0x%08x\n", __FUNCTION__, status, dma_req.dma_status));
 #endif
         return status_read;
     }
@@ -288,7 +349,7 @@ ifcdaqdrv_status ifcdaqdrv_dma_read_unlocked(struct ifcdaqdrv_dev *ifcdevice, ui
 
     if (dma_req.dma_status != valid_dma_status) {
 #if DEBUG
-        TRACE((4, "Error: %s() DMA error 0x%08x\n", __FUNCTION__, dma_req.dma_status));
+        LOG((4, "Error: %s() DMA error 0x%08x\n", __FUNCTION__, dma_req.dma_status));
 #endif
         return status_read;
     }
@@ -316,7 +377,7 @@ static inline int32_t swap_mask(struct ifcdaqdrv_dev *ifcdevice) {
  * @param size Size in bytes to read.
  */
 
-ifcdaqdrv_status ifcdaqdrv_read_sram_unlocked(struct ifcdaqdrv_dev *ifcdevice, struct pev_ioctl_buf *dma_buf, uint32_t offset, uint32_t size) {
+ifcdaqdrv_status ifcdaqdrv_read_sram_unlocked(struct ifcdaqdrv_dev *ifcdevice, struct tsc_ioctl_kbuf_req *dma_buf, uint32_t offset, uint32_t size) {
     int status;
 
     if (!dma_buf || !dma_buf->b_addr) {
@@ -337,6 +398,35 @@ static inline int32_t smem_fmc_offset(struct ifcdaqdrv_dev *ifcdevice){
     return ifcdevice->fmc == 1 ? 0 : IFC_SCOPE_SMEM_FMC2_SAMPLES_OFFSET;
 }
 
+void ifc_stop_timer(struct ifcdaqdrv_dev *ifcdevice) {
+#ifdef TOSCA_USRLIB
+    //pevx_timer_stop(ifcdevice->card);
+    tsc_timer_stop();
+#endif
+}
+
+void ifc_init_timer(struct ifcdaqdrv_dev *ifcdevice){
+#ifdef TOSCA_USRLIB
+    // pevx_timer_start(ifcdevice->card, TIMER_1MHZ ,0);
+    tsc_timer_start(TIMER_1MHZ, 0);
+#endif
+}
+
+uint64_t ifc_get_timer(struct ifcdaqdrv_dev *ifcdevice){
+
+#ifdef TOSCA_USRLIB
+    // struct pevx_time tim;  
+    // pevx_timer_read(ifcdevice->card, &tim);
+    struct tsc_time tim;
+    tsc_timer_read(ifcdevice->card, &tim);
+
+    return ((uint64_t)tim.time * 1000) + (uint64_t)(tim.utime & 0x1ffff) / 100;
+#else
+    return 0;
+#endif
+    
+}
+
 /*
  * This function reads /size/ bytes from /offset/ in SMEM (DDR3) to /res/. It uses dma_buf as intermediate storage since
  * you typically cannot allocate arbitrarily large bus pointers.
@@ -348,10 +438,15 @@ static inline int32_t smem_fmc_offset(struct ifcdaqdrv_dev *ifcdevice){
  * @param size Size in bytes to read.
  */
 
-ifcdaqdrv_status ifcdaqdrv_read_smem_unlocked(struct ifcdaqdrv_dev *ifcdevice, void *res, struct pev_ioctl_buf *dma_buf, uint32_t offset, uint32_t size) {
+ifcdaqdrv_status ifcdaqdrv_read_smem_unlocked(struct ifcdaqdrv_dev *ifcdevice, void *res, struct tsc_ioctl_kbuf_req *dma_buf, uint32_t offset, uint32_t size) {
     int status;
     intptr_t src_addr;
     uint32_t current_size;
+    uint32_t total_size; /* Debug variable */
+    uint64_t total_time; /* Debug variable */
+
+    if(DEBUG) total_size = size;
+    LOG((LEVEL_DEBUG, "Copying from: 0x%08x, amount: %u\n", offset, size));
 
     if (!res || !dma_buf || !dma_buf->b_addr) {
         return status_internal;
@@ -359,6 +454,7 @@ ifcdaqdrv_status ifcdaqdrv_read_smem_unlocked(struct ifcdaqdrv_dev *ifcdevice, v
 
     src_addr = smem_fmc_offset(ifcdevice) + offset;
     current_size = dma_buf->size;
+    if(DEBUG) ifc_init_timer(ifcdevice);
     while(size != 0) {
         if(size < dma_buf->size) {
             current_size = size;
@@ -380,22 +476,13 @@ ifcdaqdrv_status ifcdaqdrv_read_smem_unlocked(struct ifcdaqdrv_dev *ifcdevice, v
         size     -= current_size;
     }
 
+    if(DEBUG) total_time = ifc_get_timer(ifcdevice);
+    if(DEBUG) ifc_stop_timer(ifcdevice);
+    LOG((LEVEL_DEBUG, "read_smem_unlocked %.2f MB took %llu ms\n", (total_size)/1024.0/1024.0, total_time));
+
     return status_success;
 }
 
-
-void ifc_initTimer(uint crate){
-    UNUSED(crate);
-    // pevx_timer_start(crate, TMR_ ,0);
-}
-
-uint64_t ifc_getTimer(uint crate){
-    struct pevx_time tim;
-
-    pevx_timer_read(crate, &tim);
-
-    return ((uint64_t)tim.time * 1000) + (uint64_t)(tim.utime & 0x1ffff) / 100;
-}
 
 // The following part is kept because we might implement interrupt handling with signals in the future...
 #if 0

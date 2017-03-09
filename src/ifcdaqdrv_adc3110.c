@@ -7,11 +7,15 @@
 #include <sys/ioctl.h>
 #include <pthread.h>
 
-#include <pevioctl.h>
-#include <pevxulib.h>
+#ifdef TOSCA_USRLIB
+// #include <pevioctl.h>
+// #include <pevxulib.h>
+#include <tscioctl.h>
+#include <tsculib.h>
+#endif
 
 #include "debug.h"
-#include "ifcdaqdrv.h"
+#include "ifcdaqdrv2.h"
 #include "ifcdaqdrv_utils.h"
 #include "ifcdaqdrv_fmc.h"
 #include "ifcdaqdrv_adc3110.h"
@@ -47,6 +51,13 @@ static ADC3110_SBCDEVICE adc3110_get_sbc_device(unsigned channel){
 #endif
         return ADS01;
     }
+}
+
+ifcdaqdrv_status adc3111_register(struct ifcdaqdrv_dev *ifcdevice) {
+    ifcdaqdrv_status status;
+    status = adc3110_register(ifcdevice);
+    ifcdevice->vref_max = 0.5;
+    return status;
 }
 
 ifcdaqdrv_status adc3110_register(struct ifcdaqdrv_dev *ifcdevice) {
@@ -424,19 +435,19 @@ ifcdaqdrv_status ifc_read_ioxos_signature(struct ifcdaqdrv_dev *ifcdevice, struc
                strcmp(signature, "ADC3110") == 0 ||
                strcmp(signature, "ADC3110 ") == 0 ||
                strcmp(signature, " ADC3110") == 0) {
-        p = calloc(strlen("ADC31110") + 1, 1);
+        p = calloc(strlen("ADC3110") + 1, 1);
         strcpy(p, "ADC3110");
     } else if (strcmp(signature, "ADC_3111") == 0 ||
                strcmp(signature, "ADC3111") == 0 ||
                strcmp(signature, "ADC3111 ") == 0 ||
                strcmp(signature, " ADC3111") == 0) {
-        p = calloc(strlen("ADC31111") + 1, 1);
+        p = calloc(strlen("ADC3111") + 1, 1);
         strcpy(p, "ADC3111");
     } else if (strcmp(signature, "ADC_3112") == 0 ||
                strcmp(signature, "ADC3112") == 0 ||
                strcmp(signature, "ADC3112 ") == 0 ||
                strcmp(signature, " ADC3112") == 0) {
-        p = calloc(strlen("ADC31112") + 1, 1);
+        p = calloc(strlen("ADC3112") + 1, 1);
         strcpy(p, "ADC3112");
     } else {
         return status_internal;
@@ -503,11 +514,23 @@ ifcdaqdrv_status adc3110_tmp102_read(struct ifcdaqdrv_dev *ifcdevice, unsigned r
 
     device |= ifcdevice->fmc == 1 ? IFC_FMC1_I2C_BASE : IFC_FMC2_I2C_BASE;
 
-    status  = pevx_i2c_read(ifcdevice->card, device, reg, ui32_reg_val);
+#ifdef TOSCA_USRLIB
+    //status  = pevx_i2c_read(ifcdevice->card, device, reg, ui32_reg_val);
 
+    /*TODO: check usage of i2c_read. Who is the first argument ? */
+
+    status  = tsc_i2c_read(ifcdevice->card, device, reg, ui32_reg_val);
+
+
+    /* TODO fix bit mask */
     if ((status & I2C_CTL_EXEC_MASK) == I2C_CTL_EXEC_ERR) {
         return status_i2c_nack;
     }
+
+#else
+    status = 0;
+#endif
+
 
     return status_success;
 }

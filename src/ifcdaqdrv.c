@@ -7,17 +7,22 @@
 #include <sys/ioctl.h>
 #include <pthread.h>
 
-
-#include <pevioctl.h>
-#include <pevxulib.h>
+#ifdef TOSCA_USRLIB
+// #include <pevioctl.h>
+// #include <pevxulib.h>
+#include <tscioctl.h>
+#include <tsculib.h>
+#endif
 
 #include "debug.h"
-#include "ifcdaqdrv.h"
+#include "ifcdaqdrv2.h"
 #include "ifcdaqdrv_utils.h"
 #include "ifcdaqdrv_scope.h"
 #include "ifcdaqdrv_fmc.h"
-#include "ifcdaqdrv_acq420.h"
+// #include "ifcdaqdrv_acq420.h"
 #include "ifcdaqdrv_adc3110.h"
+// #include "ifcfastintdrv.h"
+// #include "ifcfastintdrv_utils.h"
 
 LIST_HEAD(ifcdaqdrv_devlist);
 pthread_mutex_t ifcdaqdrv_devlist_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -28,16 +33,18 @@ pthread_mutex_t ifcdaqdrv_devlist_lock = PTHREAD_MUTEX_INITIALIZER;
 
 ifcdaqdrv_status ifcdaqdrv_open_device(struct ifcdaqdrv_usr *ifcuser) {
     ifcdaqdrv_status      status;
-    struct pevx_node     *node;
-    char                 *p;
+    //struct pevx_node     *node;
+    int                   node; /* TOSCA file descriptor */
     int32_t               i32_reg_val;
     struct ifcdaqdrv_dev *ifcdevice;
+
+
 
     if (!ifcuser || ifcuser->card >= MAX_PEV_CARDS || (ifcuser->fmc != 1 && ifcuser->fmc != 2)) {
         return status_argument_invalid;
     }
 
-    TRACE((5, "Level %d tracing set.\n", ifcdaqdrvDebug));
+    LOG((5, "Level %d tracing set.\n", ifcdaqdrvDebug));
 
     pthread_mutex_lock(&ifcdaqdrv_devlist_lock);
 
@@ -59,17 +66,27 @@ ifcdaqdrv_status ifcdaqdrv_open_device(struct ifcdaqdrv_usr *ifcuser) {
     }
 
     /* Initialize pevx library */
-    node = pevx_init(ifcuser->card);
-    if (!node) {
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status_no_device;
+
+#ifdef TOSCA_USRLIB
+    // node = pevx_init(ifcuser->card);
+    // if (!node) {
+    //     status = status_no_device;
+    //     goto err_pevx_init;
+    // }
+
+    node = tsc_init();
+    if (node < 0) {
+        status = status_no_device;
+        goto err_pevx_init;
     }
+
+#endif
 
     /* Allocate private structure */
     ifcdevice = calloc(1, sizeof(struct ifcdaqdrv_dev));
     if (!ifcdevice) {
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status_internal;
+        status = status_internal;
+        goto err_dev_alloc;
     }
 
     ifcdevice->card  = ifcuser->card;
@@ -84,8 +101,8 @@ ifcdaqdrv_status ifcdaqdrv_open_device(struct ifcdaqdrv_usr *ifcuser) {
     /* Read TOSCA signature and verify that board is a TOSCA board. */
     status = ifc_xuser_tcsr_read(ifcdevice, 0, &i32_reg_val);
     if (status) {
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status_no_device;
+        status = status_internal;
+        goto err_read;
     }
     if (i32_reg_val != IFC1210SCOPEDRV_TOSCA_SIGNATURE) {
         // Bug in current firmware, TOSCA signature is not at address 0.
@@ -99,21 +116,25 @@ ifcdaqdrv_status ifcdaqdrv_open_device(struct ifcdaqdrv_usr *ifcuser) {
     /* Read APP signature */
     status = ifc_scope_tcsr_read(ifcdevice, 0, &i32_reg_val);
     if (status) {
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status_no_device;
+        status = status_internal;
+        goto err_read;
     }
 
     switch (i32_reg_val) {
     case IFC1210SCOPEDRV_SCOPE_SIGNATURE:
     case IFC1210SCOPEDRV_FASTSCOPE_SIGNATURE:
     case IFC1210SCOPEDRV_SCOPE_DTACQ_SIGNATURE:
+        LOG((5, "Generic DAQ Application\n"));
         /* Recognized scope implementation. */
         break;
+    // case IFC1210FASTINT_APP_SIGNATURE:
+    //     LOG((5, "Fast Interlock Application\n"));
+    //     /* Recognized fast interlock implementation */
+    //     break;
     default:
         // Skip all signature verification for now...
-        // ifcdaqdrv_free(ifcdevice);
-        // pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        // return status_incompatible;
+        //status = status_incompatible;
+        //goto err_read;
         break;
     }
     ifcdevice->app_signature = i32_reg_val;
@@ -122,8 +143,8 @@ ifcdaqdrv_status ifcdaqdrv_open_device(struct ifcdaqdrv_usr *ifcuser) {
     /* Read FMC FDK signature */
     status = ifc_fmc_tcsr_read(ifcdevice, 0, &i32_reg_val);
     if (status) {
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status_no_device;
+        status = status_internal;
+        goto err_read;
     }
     printf("FMC FDK signature: %08x\n", i32_reg_val);
 #endif
@@ -131,9 +152,8 @@ ifcdaqdrv_status ifcdaqdrv_open_device(struct ifcdaqdrv_usr *ifcuser) {
     /* Determine what type of FMC that is mounted. */
     ifcdevice->fru_id = calloc(1, sizeof(struct fmc_fru_id));
     if (!ifcdevice->fru_id) {
-        ifcdaqdrv_free(ifcdevice);
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status_internal;
+        status = status_internal;
+        goto err_read;
     }
 
     /* ifc_fmc_eeprom_read_fru will allocate two char arrays that have to be freed by us. */
@@ -142,52 +162,65 @@ ifcdaqdrv_status ifcdaqdrv_open_device(struct ifcdaqdrv_usr *ifcuser) {
         /* .... fall back to IOxOS proprietary signature */
         status = ifc_read_ioxos_signature(ifcdevice, ifcdevice->fru_id);
         if (status) {
-            ifcdaqdrv_free(ifcdevice);
-            pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-            return status;
+            status = status_internal;
+            goto err_read;
         }
     } else if (status) {
-        ifcdaqdrv_free(ifcdevice);
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status;
+        status = status_internal;
+        goto err_read;
     }
 
-    p = ifcdevice->fru_id->product_name;
-    if (p) {
-        if (strcmp(p, "ACQ420FMC") == 0) {
-            acq420_register(ifcdevice);
-        } else if (strcmp(p, "ADC3110") == 0) {
-            adc3110_register(ifcdevice);
-        } else if (strcmp(p, "ADC3111") == 0) {
-            adc3110_register(ifcdevice);
-        } else if (strcmp(p, "ADC3112") == 0) {
-            TRACE((5, "No support for ADC3112 yet\n"));
-        } else {
-            TRACE((5, "No recognized device %s\n", p));
-            ifcdaqdrv_free(ifcdevice);
-            pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-            return status_incompatible;
+    /*
+     * Register the correct functions with the ifcdevice and
+     * allocate all memory necessary for DMA transfers
+     */
+    switch (ifcdevice->app_signature) {
+    case IFC1210SCOPEDRV_SCOPE_SIGNATURE:
+    case IFC1210SCOPEDRV_FASTSCOPE_SIGNATURE:
+    case IFC1210SCOPEDRV_SCOPE_DTACQ_SIGNATURE:
+        status = ifcdaqdrv_scope_register(ifcdevice);
+        if(status) {
+            goto err_dev_alloc;
         }
-    } else {
-        TRACE((4, "Internal error, no product_name\n"));
-        ifcdaqdrv_free(ifcdevice);
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status_internal;
-    }
-
-    /* Allocate all memory necessary for DMA transfers */
-    status = ifcdaqdrv_dma_allocate(ifcdevice);
-    if (status) {
-        ifcdaqdrv_free(ifcdevice);
-        pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-        return status;
+        status = ifcdaqdrv_dma_allocate(ifcdevice);
+        if(status) {
+            goto err_read;
+        }
+        break;
+    // case IFC1210FASTINT_APP_SIGNATURE:
+    //     status = ifcfastintdrv_register(ifcdevice);
+    //     if(status) {
+    //         goto err_dev_alloc;
+    //     }
+    //     status = ifcfastintdrv_dma_allocate(ifcdevice);
+    //     if(status) {
+    //         goto err_read;
+    //     }
+    //     break;
+    default:
+        break;
     }
 
     /* Add device to the list of opened devices */
     list_add_tail(&ifcdevice->list, &ifcdaqdrv_devlist);
     pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
-
     return status_success;
+
+err_read:
+    /* Free ifcdevice (This will also free fru_id for us. */
+    ifcdaqdrv_free(ifcdevice);
+
+err_dev_alloc:
+    /* Close pevx library */
+#ifdef TOSCA_USRLIB
+    // pevx_exit(ifcdevice->card);
+    tsc_exit();
+#endif  
+
+err_pevx_init:
+    /* Unlock device list */
+    pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
+    return status;
 }
 
 /*
@@ -208,7 +241,10 @@ ifcdaqdrv_status ifcdaqdrv_close_device(struct ifcdaqdrv_usr *ifcuser) {
     if (--ifcdevice->count == 0) {
         list_del(&ifcdevice->list);
         ifcdaqdrv_free(ifcdevice);
-        pevx_exit(ifcdevice->card);
+#ifdef TOSCA_USRLIB
+        // pevx_exit(ifcdevice->card);
+        tsc_exit();
+#endif
         free(ifcdevice);
     }
     pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
@@ -308,7 +344,7 @@ ifcdaqdrv_status ifcdaqdrv_arm_device(struct ifcdaqdrv_usr *ifcuser){
         acquisition_time = ((nsamples * average * decimation) / (frequency / divisor));
         /* Poll for the expected acquisition time before giving up */
         timeo = SOFT_TRIG_LEAST_AMOUNT_OF_CYCLES + acquisition_time / (ifcdevice->poll_period * 1e-6);
-        TRACE((6, "%f %d iterations\n", acquisition_time, (int32_t) (SOFT_TRIG_LEAST_AMOUNT_OF_CYCLES + acquisition_time / (ifcdevice->poll_period * 1e-6))));
+        LOG((6, "%f %d iterations\n", acquisition_time, (int32_t) (SOFT_TRIG_LEAST_AMOUNT_OF_CYCLES + acquisition_time / (ifcdevice->poll_period * 1e-6))));
         do {
             status  = ifc_scope_acq_tcsr_write(ifcdevice, IFC_SCOPE_TCSR_LA_REG, 1 << IFC_SCOPE_TCSR_LA_Spec_CMD_SHIFT);
             usleep(ifcdevice->poll_period);
@@ -322,7 +358,7 @@ ifcdaqdrv_status ifcdaqdrv_arm_device(struct ifcdaqdrv_usr *ifcuser){
 
         if(((i32_reg_val & IFC_SCOPE_TCSR_CS_ACQ_Status_MASK) >> IFC_SCOPE_TCSR_CS_ACQ_Status_SHIFT) < 2) {
             // Failed to self-trigger.
-            TRACE((6, "CS register value is %08x after %d iterations\n", i32_reg_val, (int32_t) (SOFT_TRIG_LEAST_AMOUNT_OF_CYCLES + acquisition_time / (ifcdevice->poll_period * 1e-6))));
+            LOG((6, "CS register value is %08x after %d iterations\n", i32_reg_val, (int32_t) (SOFT_TRIG_LEAST_AMOUNT_OF_CYCLES + acquisition_time / (ifcdevice->poll_period * 1e-6))));
             pthread_mutex_unlock(&ifcdevice->lock);
             return status_internal;
         }
@@ -411,7 +447,7 @@ ifcdaqdrv_status ifcdaqdrv_wait_acq_end(struct ifcdaqdrv_usr *ifcuser) {
 
     do {
         status = ifc_scope_acq_tcsr_read(ifcdevice, IFC_SCOPE_TCSR_CS_REG, &i32_reg_val);
-        TRACE((LEVEL_DEBUG, "TCSR %02x 0x%08x\n", ifc_get_scope_tcsr_offset(ifcdevice), i32_reg_val));
+        LOG((LEVEL_DEBUG, "TCSR %02x 0x%08x\n", ifc_get_scope_tcsr_offset(ifcdevice), i32_reg_val));
         usleep(ifcdevice->poll_period);
     } while (!status && ifcdevice->armed && (
                 (i32_reg_val & IFC_SCOPE_TCSR_CS_ACQ_Status_MASK) >> IFC_SCOPE_TCSR_CS_ACQ_Status_SHIFT !=
@@ -792,7 +828,7 @@ ifcdaqdrv_status ifcdaqdrv_set_trigger(struct ifcdaqdrv_usr *ifcuser, ifcdaqdrv_
         break;
     }
 
-    TRACE((LEVEL_INFO, "Will set cs val 0x%08x, trig val 0x%08x\n", i32_cs_val, i32_trig_val));
+    LOG((LEVEL_INFO, "Will set cs val 0x%08x, trig val 0x%08x\n", i32_cs_val, i32_trig_val));
 
     pthread_mutex_lock(&ifcdevice->lock);
 
@@ -822,7 +858,7 @@ ifcdaqdrv_status ifcdaqdrv_set_trigger(struct ifcdaqdrv_usr *ifcuser, ifcdaqdrv_
 #if DEBUG
     /* This is interesting because set_trigger_threshold may modify the content of trigger register */
     ifc_scope_acq_tcsr_read(ifcdevice, IFC_SCOPE_TCSR_TRIG_REG, &i32_trig_val);
-    TRACE((LEVEL_INFO, "Is set trig val %08x\n", i32_trig_val));
+    LOG((LEVEL_INFO, "Is set trig val %08x\n", i32_trig_val));
 #endif
 
     pthread_mutex_unlock(&ifcdevice->lock);
@@ -1271,7 +1307,7 @@ ifcdaqdrv_status ifcdaqdrv_get_resolution(struct ifcdaqdrv_usr *ifcuser, uint32_
         return status_argument_invalid;
     }
 
-    if (!ifcdevice->resolution) {
+    if (!ifcdevice->sample_resolution) {
         return status_internal;
     }
 

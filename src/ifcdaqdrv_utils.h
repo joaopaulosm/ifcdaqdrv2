@@ -1,6 +1,8 @@
 #ifndef _IFC1210SCOPEDRV_UTILS_H_
 #define _IFC1210SCOPEDRV_UTILS_H_ 1
 
+#include <pthread.h>
+
 #include "ifcdaqdrv_list.h"
 
 #define MAX_PEV_CARDS 16
@@ -56,6 +58,31 @@ typedef enum {
     ifcdaqdrv_led_fmc1
 } ifcdaqdrv_led;
 
+/* Mockup the tosca buffer */
+#ifndef TOSCA_USRLIB
+
+typedef long dma_addr_t;
+
+struct tsc_ioctl_kbuf_req
+{
+  uint size;
+  void *k_base;
+  dma_addr_t b_base;
+  void *u_base;
+};
+
+struct tsc_ioctl_dma_req
+{
+  dma_addr_t src_addr;
+  dma_addr_t des_addr;
+  uint size;
+  unsigned char src_space; unsigned char src_mode; unsigned char des_space; unsigned char des_mode;
+  unsigned char start_mode; unsigned char end_mode; unsigned char intr_mode; unsigned char wait_mode;
+  uint dma_status;
+};
+
+#endif
+
 
 /**
  * @brief Device private struct.
@@ -67,7 +94,8 @@ struct ifcdaqdrv_dev {
     struct list_head   list;            /**< Entry in the list of opened devices, sis8300drv_devlist. */
     uint32_t           card;            /**< Card/Crate number selected by rotational on-board switch. */
     uint32_t           fmc;             /**< FMC slot, 1 or 2. */
-    struct pevx_node  *node;            /**< PEV node structure */
+    //struct pevx_node  *node;            /**< PEV node structure */
+    int                node;
     int                count;           /**< Number of times this device has been opened. */
     uint32_t           init_called;     /**< Positive if init_adc has been called. */
     uint32_t           ch_enabled;      /**< bitmask of enabled channels */
@@ -112,8 +140,8 @@ struct ifcdaqdrv_dev {
     ifcdaqdrv_acq_store_mode mode;           /**< In which memory to store acquistition SRAM/SMEM */
     ifcdaqdrv_trigger_type   trigger_type;
 
-    struct pev_ioctl_buf    *sram_dma_buf;                /**< Buffer for SRAM DMA transfers */
-    struct pev_ioctl_buf    *smem_dma_buf;                /**< Buffer for SMEM DMA transfers */
+    struct tsc_ioctl_kbuf_req    *sram_dma_buf;                /**< Buffer for SRAM DMA transfers */
+    struct tsc_ioctl_kbuf_req    *smem_dma_buf;                /**< Buffer for SMEM DMA transfers */
     void                    *all_ch_buf;                  /**< Buffer to store raw SMEM data */
 
     uint32_t                 sample_size;                  /**< Sample size in bytes, TODO: Function pointer instead? */
@@ -210,8 +238,8 @@ ifcdaqdrv_status ifc_fmc_tcsr_setclr(struct ifcdaqdrv_dev *ifcdevice, int regist
 void ifcdaqdrv_free(struct ifcdaqdrv_dev *ifcdevice);
 
 ifcdaqdrv_status ifcdaqdrv_dma_allocate(struct ifcdaqdrv_dev *ifcdevice);
-ifcdaqdrv_status ifcdaqdrv_read_sram_unlocked(struct ifcdaqdrv_dev *ifcdevice, struct pev_ioctl_buf *dma_buf, uint32_t offset, uint32_t size);
-ifcdaqdrv_status ifcdaqdrv_read_smem_unlocked(struct ifcdaqdrv_dev *ifcdevice, void *res, struct pev_ioctl_buf *dma_buf, uint32_t offset, uint32_t size);
+ifcdaqdrv_status ifcdaqdrv_read_sram_unlocked(struct ifcdaqdrv_dev *ifcdevice, struct tsc_ioctl_kbuf_req *dma_buf, uint32_t offset, uint32_t size);
+ifcdaqdrv_status ifcdaqdrv_read_smem_unlocked(struct ifcdaqdrv_dev *ifcdevice, void *res, struct tsc_ioctl_kbuf_req *dma_buf, uint32_t offset, uint32_t size);
 ifcdaqdrv_status ifcdaqdrv_get_sram_la(struct ifcdaqdrv_dev *ifcdevice, uint32_t *last_address);
 ifcdaqdrv_status ifcdaqdrv_get_smem_la(struct ifcdaqdrv_dev *ifcdevice, uint32_t *last_address);
 // int ifcdaqdrv_get_sram_pretrig_size(struct ifcdaqdrv_dev *ifcdevice, int *size);

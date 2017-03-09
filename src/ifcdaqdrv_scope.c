@@ -6,18 +6,57 @@
 #include <assert.h>
 #include <string.h>
 
-#include <pevxulib.h>
-#include <pevioctl.h>
-#include <pevulib.h>
+#ifdef TOSCA_USRLIB
+// #include <pevioctl.h>
+// #include <pevxulib.h>
+// #include <pevulib.h>
+#include <tscioctl.h>
+#include <tsculib.h>
+#endif
 
 #include <epicsThread.h>
 #include <epicsTime.h>
 
 #include "debug.h"
-#include "ifcdaqdrv.h"
+#include "ifcdaqdrv2.h"
 #include "ifcdaqdrv_utils.h"
 #include "ifcdaqdrv_fmc.h"
 #include "ifcdaqdrv_scope.h"
+// #include "ifcdaqdrv_acq420.h"
+#include "ifcdaqdrv_adc3110.h"
+// #include "ifcdaqdrv_adc3112.h"
+
+ifcdaqdrv_status ifcdaqdrv_scope_register(struct ifcdaqdrv_dev *ifcdevice){
+    char *p;
+    p = ifcdevice->fru_id->product_name;
+    if (p) {
+        // if (strcmp(p, "ACQ420FMC") == 0) {
+        //     LOG((5, "Identified ACQ420FMC\n"));
+        //     acq420_register(ifcdevice);
+        // } else if (strcmp(p, "ADC3110") == 0) {
+        //     LOG((5, "Identified ADC3110\n"));
+        //     adc3110_register(ifcdevice);
+        // } else if (strcmp(p, "ADC3111") == 0) {
+        //     LOG((5, "Identified ADC3111\n"));
+        //     adc3111_register(ifcdevice);
+        // } else if (strcmp(p, "ADC3112") == 0) {
+        //     LOG((5, "No support for ADC3112 yet\n"));
+        // } else {
+        //     LOG((5, "No recognized device %s\n", p));
+        //     return status_incompatible;
+        // }
+
+        if (strcmp(p, "ADC3110") == 0) {
+            LOG((5, "Identified ADC3110\n"));
+            adc3110_register(ifcdevice);
+        }
+
+    } else {
+        LOG((4, "Internal error, no product_name\n"));
+        return status_internal;
+    }
+    return status_success;
+}
 
 ifcdaqdrv_status ifcdaqdrv_scope_set_sram_nsamples(struct ifcdaqdrv_dev *ifcdevice, unsigned nsamples){
     int32_t i32_reg_val = 0;
@@ -43,7 +82,7 @@ ifcdaqdrv_status ifcdaqdrv_scope_set_sram_nsamples(struct ifcdaqdrv_dev *ifcdevi
     default:
         return status_argument_range;
     }
-    TRACE((5, "acq %d, reg_val %08x\n", nsamples, i32_reg_val));
+    LOG((5, "acq %d, reg_val %08x\n", nsamples, i32_reg_val));
     return ifc_scope_acq_tcsr_setclr(ifcdevice, 0, i32_reg_val << 12, IFC_SCOPE_TCSR_CS_SRAM_ACQ_Size_MASK);
 }
 
@@ -72,7 +111,7 @@ ifcdaqdrv_status ifcdaqdrv_scope_get_sram_nsamples(struct ifcdaqdrv_dev *ifcdevi
     default:
         return status_internal;
     }
-    TRACE((7, "acq %d, reg_val %08x\n", *nsamples, i32_reg_val));
+    LOG((7, "acq %d, reg_val %08x\n", *nsamples, i32_reg_val));
     return status;
 }
 
@@ -664,7 +703,7 @@ ifcdaqdrv_status ifcdaqdrv_scope_read_ai_ch(struct ifcdaqdrv_dev *ifcdevice, uin
     return status_success;
 }
 // TODO Temporary include
-#include "ifcdaqdrv_acq420.h"
+//#include "ifcdaqdrv_acq420.h"
 
 ifcdaqdrv_status ifcdaqdrv_scope_switch_mode(struct ifcdaqdrv_dev *ifcdevice, ifcdaqdrv_acq_store_mode mode) {
     int32_t i32_reg_val;

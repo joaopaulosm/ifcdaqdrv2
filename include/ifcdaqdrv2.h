@@ -1,6 +1,10 @@
 #ifndef _IFC1210SCOPEDRV_H_
 #define _IFC1210SCOPEDRV_H_ 1
 
+/* Types from the following libraries are used */
+#include <stddef.h>
+#include <inttypes.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif

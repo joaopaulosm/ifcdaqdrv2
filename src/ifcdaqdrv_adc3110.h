@@ -1,7 +1,7 @@
 #ifndef _IFC_ADC3110_H_
 #define _IFC_ADC3110_H_ 1
 
-#include "ifcdaqdrv.h"
+#include "ifcdaqdrv2.h"
 #include "ifcdaqdrv_utils.h"
 #include "ifcdaqdrv_fmc.h"
 
@@ -33,6 +33,7 @@ typedef enum {LMK04906, // LMK04906
 } ADC3110_SBCDEVICE;
 
 ifcdaqdrv_status adc3110_register(struct ifcdaqdrv_dev *ifcdevice);
+ifcdaqdrv_status adc3111_register(struct ifcdaqdrv_dev *ifcdevice);
 ifcdaqdrv_status adc3110_init_adc(struct ifcdaqdrv_dev *ifcdevice);
 ifcdaqdrv_status adc3110_adc_init_priv(struct ifcdaqdrv_dev *ifcdevice, ADC3110_SBCDEVICE device);
 
