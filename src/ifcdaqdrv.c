@@ -94,9 +94,9 @@ err_read:
     ifcdaqdrv_free(ifcdevice);
 
 err_dev_alloc:
-    // /* Close pevx library */
-
+// /* Close pevx library */
 // err_pevx_init:
+
     /* Unlock device list */
     pthread_mutex_unlock(&ifcdaqdrv_devlist_lock);
     return status;
@@ -188,8 +188,6 @@ ifcdaqdrv_status ifcdaqdrv_arm_device(struct ifcdaqdrv_usr *ifcuser){
 
     pthread_mutex_lock(&ifcdevice->lock);
 
-    printf("[DEBUG] Arming device...\n");
-
     ifcdevice->armed = 1;
     pthread_mutex_unlock(&ifcdevice->lock);
     return status_success;
@@ -210,8 +208,6 @@ ifcdaqdrv_status ifcdaqdrv_disarm_device(struct ifcdaqdrv_usr *ifcuser){
     }
 
     pthread_mutex_lock(&ifcdevice->lock);
-
-    printf("[DEBUG] Disarming device...\n");
 
     ifcdevice->armed = 0;
 
@@ -242,14 +238,11 @@ ifcdaqdrv_status ifcdaqdrv_wait_acq_end(struct ifcdaqdrv_usr *ifcuser) {
 
     srand((unsigned int) time(NULL));
 
-    int i;
+    uint32_t i;
     for (i = 0; i < ifcdevice->buffersize; i++)
     {
         ifcdevice->databuffer[i] = (int32_t) ((rand()%65536) - 32768);
     }
-
-    // buffer filled with random numbers
-    printf("[DEBUG] Acq ended. Buffers filled with random data\n");
 
     if (!ifcdevice->armed) {
         return status_cancel;
@@ -291,8 +284,11 @@ ifcdaqdrv_status ifcdaqdrv_read_ai(struct ifcdaqdrv_usr *ifcuser, void *data) {
         return status_no_support;
     }
 
-    data = (void*) &ifcdevice->databuffer[0];
-    printf("[DEBUG] Reading function called. Passing buffer pointer:\n");
+    /* Fill the data pointer with databuffer data */
+    uint32_t totalsamples = ifcdevice->nchannels * ifcdevice->rt_nsamples;
+    int32_t *target = (int32_t*) data;
+   
+    memcpy(target, ifcdevice->databuffer, totalsamples*sizeof(int32_t));
 
     pthread_mutex_unlock(&ifcdevice->lock);
     return status_no_support;
