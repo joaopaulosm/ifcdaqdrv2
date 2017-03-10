@@ -545,8 +545,8 @@ ifcdaqdrv_status ifcdaqdrv_scope_read_ai(struct ifcdaqdrv_dev *ifcdevice, void *
         }
 #if DEBUG
         int32_t *itr;
-        printf("%s(): u_addr %p, acq_size %db, nsamples %d, npretrig %d, la %d, ptq %d, origin %p\n", __FUNCTION__,
-                ifcdevice->smem_dma_buf->u_addr, nsamples * ifcdevice->sample_size, nsamples, npretrig, last_address, ptq,
+        printf("%s(): u_base %p, acq_size %db, nsamples %d, npretrig %d, la %d, ptq %d, origin %p\n", __FUNCTION__,
+                ifcdevice->smem_dma_buf->u_base, nsamples * ifcdevice->sample_size, nsamples, npretrig, last_address, ptq,
                 origin);
 
         printf("0x%08x: ", origin);
@@ -605,7 +605,8 @@ ifcdaqdrv_status ifcdaqdrv_scope_read_ai_ch(struct ifcdaqdrv_dev *ifcdevice, uin
             return status;
         }
 
-        origin   = ifcdevice->sram_dma_buf->u_addr;
+        /* TODO: check the usage of dma_buf for TOSCA user library */
+        origin   = ifcdevice->sram_dma_buf->u_base;
         npretrig = (nsamples * ptq) / 8;
         break;
     case ifcdaqdrv_acq_mode_smem:
@@ -644,8 +645,8 @@ ifcdaqdrv_status ifcdaqdrv_scope_read_ai_ch(struct ifcdaqdrv_dev *ifcdevice, uin
 
 #if DEBUG
     int32_t *itr;
-    printf("%s(): u_addr %p, acq_size %db, nsamples %d, npretrig %d, la %d, ptq %d, origin %p\n", __FUNCTION__,
-            ifcdevice->sram_dma_buf->u_addr, nsamples * ifcdevice->sample_size, nsamples, npretrig, last_address, ptq,
+    printf("%s(): u_base %p, acq_size %db, nsamples %d, npretrig %d, la %d, ptq %d, origin %p\n", __FUNCTION__,
+            ifcdevice->sram_dma_buf->u_base, nsamples * ifcdevice->sample_size, nsamples, npretrig, last_address, ptq,
             origin);
 
     printf("0x%08x: ", origin);

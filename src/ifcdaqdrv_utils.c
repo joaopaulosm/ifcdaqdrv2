@@ -380,14 +380,16 @@ static inline int32_t swap_mask(struct ifcdaqdrv_dev *ifcdevice) {
 ifcdaqdrv_status ifcdaqdrv_read_sram_unlocked(struct ifcdaqdrv_dev *ifcdevice, struct tsc_ioctl_kbuf_req *dma_buf, uint32_t offset, uint32_t size) {
     int status;
 
-    if (!dma_buf || !dma_buf->b_addr) {
+    /* TODO: check usage of base address of the buffer. Tosca doesn't use pointer */
+    //if (!dma_buf || !dma_buf->b_addr) {
+    if (!dma_buf || !dma_buf->b_base) {
         return status_internal;
     }
 
     status = ifcdaqdrv_dma_read_unlocked(
             ifcdevice,
             offset, ifcdevice->fmc == 1 ? DMA_SPACE_USR1 : DMA_SPACE_USR2, DMA_PCIE_RR2,
-            (ulong)dma_buf->b_addr, DMA_SPACE_PCIE | swap_mask(ifcdevice), DMA_PCIE_RR2,
+            (ulong)dma_buf->u_base, DMA_SPACE_PCIE | swap_mask(ifcdevice), DMA_PCIE_RR2,
             size | DMA_SIZE_PKT_1K);
 
     return status;
@@ -448,7 +450,9 @@ ifcdaqdrv_status ifcdaqdrv_read_smem_unlocked(struct ifcdaqdrv_dev *ifcdevice, v
     if(DEBUG) total_size = size;
     LOG((LEVEL_DEBUG, "Copying from: 0x%08x, amount: %u\n", offset, size));
 
-    if (!res || !dma_buf || !dma_buf->b_addr) {
+    /* TODO: check usage of base address of the buffer. Tosca doesn't use pointer */
+    //if (!dma_buf || !dma_buf->b_addr) {
+    if (!dma_buf || !dma_buf->b_base) {
         return status_internal;
     }
 
@@ -463,14 +467,14 @@ ifcdaqdrv_status ifcdaqdrv_read_smem_unlocked(struct ifcdaqdrv_dev *ifcdevice, v
         status = ifcdaqdrv_dma_read_unlocked(
                 ifcdevice,
                 src_addr, DMA_SPACE_SHM, DMA_PCIE_RR2,
-                (ulong)dma_buf->b_addr, DMA_SPACE_PCIE | swap_mask(ifcdevice), DMA_PCIE_RR2,
+                (ulong)dma_buf->b_base, DMA_SPACE_PCIE | swap_mask(ifcdevice), DMA_PCIE_RR2,
                 current_size | DMA_SIZE_PKT_1K);
 
         if (status != 0) {
             return status;
         }
 
-        memcpy(res + src_addr - (smem_fmc_offset(ifcdevice) + offset), dma_buf->u_addr, current_size);
+        memcpy(res + src_addr - (smem_fmc_offset(ifcdevice) + offset), dma_buf->u_base, current_size);
 
         src_addr += current_size;
         size     -= current_size;
